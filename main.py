@@ -1,144 +1,130 @@
-# main.py
 import argparse
-import torch
-from transformers import AutoProcessor, AutoModelForCausalLM
-from PIL import Image
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-import logging
+import json
 import os
-import numpy as np
-from typing import Dict, List, Union
-import random
-import requests
-from pathlib import Path
+from PIL import Image
+import tkinter as tk
+from tkinter import ttk
+from PIL import ImageTk
+import shutil
+from datetime import datetime
 
-class Florence2Runner:
-    def __init__(self, model_path: str = 'microsoft/Florence-2-large'):
-        """Initialize Florence-2 model and processor"""
-        logging.info(f"Initializing Florence-2 with model: {model_path}")
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32
-        ).eval().to(self.device)
-        self.processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+class ReviewGUI:
+    def __init__(self, review_dir: str, approved_dir: str, rejected_dir: str):
+        # Setup directories
+        self.review_dir = review_dir
+        self.approved_dir = approved_dir 
+        self.rejected_dir = rejected_dir
+        for dir_path in [approved_dir, rejected_dir]:
+            os.makedirs(dir_path, exist_ok=True)
         
-    def predict(self, image: Image.Image, task_prompt: str, text_input: str = None) -> Dict:
-        """Run prediction with Florence-2"""
-        prompt = task_prompt if text_input is None else task_prompt + text_input
+        # Initialize window
+        self.root = tk.Tk()
+        self.root.title("Image Review")
+        self.root.geometry("1200x800")
         
-        inputs = self.processor(
-            text=prompt,
-            images=image,
-            return_tensors="pt"
-        ).to(self.device, torch.float16 if self.device == 'cuda' else torch.float32)
+        self.setup_gui()
+        self.load_items()
         
-        generated_ids = self.model.generate(
-            input_ids=inputs["input_ids"],
-            pixel_values=inputs["pixel_values"],
-            max_new_tokens=1024,
-            early_stopping=False,
-            do_sample=False,
-            num_beams=3,
-        )
+    def setup_gui(self):
+        # Main layout
+        frame = ttk.Frame(self.root, padding="10")
+        frame.grid(row=0, column=0, sticky="nsew")
         
-        generated_text = self.processor.batch_decode(
-            generated_ids, 
-            skip_special_tokens=False
-        )[0]
+        # Image display
+        self.img_label = ttk.Label(frame)
+        self.img_label.grid(row=0, column=0, pady=10)
         
-        return self.processor.post_process_generation(
-            generated_text,
-            task=task_prompt,
-            image_size=(image.width, image.height)
-        )
-
-    def visualize_bboxes(self, image: Image.Image, data: Dict, 
-                        save_path: str = None) -> None:
-        """Visualize bounding boxes on image"""
-        fig, ax = plt.subplots()
-        ax.imshow(image)
+        # Caption display
+        self.caption = tk.StringVar()
+        ttk.Label(frame, textvariable=self.caption, wraplength=800).grid(row=1, column=0)
         
-        for bbox, label in zip(data['bboxes'], data['labels']):
-            x1, y1, x2, y2 = bbox
-            rect = patches.Rectangle(
-                (x1, y1), x2-x1, y2-y1,
-                linewidth=1,
-                edgecolor='r',
-                facecolor='none'
-            )
-            ax.add_patch(rect)
-            plt.text(
-                x1, y1,
-                label,
-                color='white',
-                fontsize=8,
-                bbox=dict(facecolor='red', alpha=0.5)
-            )
+        # Buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.grid(row=2, column=0, pady=10)
         
-        ax.axis('off')
-        if save_path:
-            plt.savefig(save_path)
-        plt.show()
-
-    def process_directory(self, input_dir: str, output_dir: str) -> None:
-        """Process all images in a directory"""
-        os.makedirs(output_dir, exist_ok=True)
-        image_files = [f for f in os.listdir(input_dir) 
-                      if f.lower().endswith(('.png', '.jpg', '.jpeg', '.webp'))]
+        ttk.Button(btn_frame, text="Approve (A)", command=self.approve).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Reject (R)", command=self.reject).pack(side=tk.LEFT, padx=5)
         
-        for img_file in image_files:
-            image_path = os.path.join(input_dir, img_file)
-            image = Image.open(image_path)
+        # Keyboard shortcuts
+        self.root.bind('a', lambda e: self.approve())
+        self.root.bind('r', lambda e: self.reject())
+        
+    def load_items(self):
+        self.items = []
+        for f in os.listdir(self.review_dir):
+            if f.endswith('_for_review.json'):
+                base = f.replace('_for_review.json', '')
+                json_path = os.path.join(self.review_dir, f)
+                img_path = os.path.join(self.review_dir, f"{base}_original.png")
+                
+                if os.path.exists(img_path):
+                    self.items.append((base, json_path, img_path))
+        
+        self.current = 0
+        if self.items:
+            self.show_current()
             
-            # Run different tasks
-            results = {}
+    def show_current(self):
+        if self.items:
+            _, json_path, img_path = self.items[self.current]
             
-            # Basic caption
-            results['caption'] = self.predict(image, '<CAPTION>')
+            # Show image
+            img = Image.open(img_path)
+            img.thumbnail((800, 600))
+            photo = ImageTk.PhotoImage(img)
+            self.img_label.configure(image=photo)
+            self.img_label.image = photo
             
-            # Object detection
-            od_results = self.predict(image, '<OD>')
-            results['object_detection'] = od_results
+            # Show caption
+            with open(json_path) as f:
+                data = json.load(f)
+            caption = data['results'].get('caption', 'No caption')
+            self.caption.set(f"Caption: {caption}")
             
-            # Save visualizations
-            base_name = os.path.splitext(img_file)[0]
-            bbox_save_path = os.path.join(output_dir, f"{base_name}_boxes.png")
-            self.visualize_bboxes(
-                image,
-                od_results['<OD>'],
-                save_path=bbox_save_path
-            )
+            # Update title
+            self.root.title(f"Review {self.current + 1}/{len(self.items)}")
             
-            # Save results
-            import json
-            results_path = os.path.join(output_dir, f"{base_name}_results.json")
-            with open(results_path, 'w') as f:
-                json.dump(results, f, indent=2)
+    def move_item(self, dest_dir):
+        if not self.items:
+            return
+            
+        base, json_path, img_path = self.items[self.current]
+        
+        # Update and save review status
+        with open(json_path) as f:
+            data = json.load(f)
+        data['review_status'] = 'approved' if dest_dir == self.approved_dir else 'rejected'
+        data['timestamp'] = datetime.now().isoformat()
+        
+        # Move files
+        shutil.move(img_path, os.path.join(dest_dir, f"{base}_original.png"))
+        with open(os.path.join(dest_dir, f"{base}_reviewed.json"), 'w') as f:
+            json.dump(data, f, indent=2)
+        os.remove(json_path)
+        
+        # Update display
+        self.items.pop(self.current)
+        if self.items:
+            if self.current >= len(self.items):
+                self.current = 0
+            self.show_current()
+        else:
+            self.root.quit()
+            
+    def approve(self):
+        self.move_item(self.approved_dir)
+        
+    def reject(self):
+        self.move_item(self.rejected_dir)
 
 def main():
-    parser = argparse.ArgumentParser(description='Florence-2 Local Runner')
-    parser.add_argument('--input_dir', type=str, required=True,
-                      help='Directory containing input images')
-    parser.add_argument('--output_dir', type=str, default='output',
-                      help='Directory to save outputs')
-    parser.add_argument('--model_path', type=str,
-                      default='microsoft/Florence-2-large',
-                      help='Florence-2 model path or identifier')
+    parser = argparse.ArgumentParser(description='Image Review Tool')
+    parser.add_argument('--review_dir', required=True, help='Review directory')
+    parser.add_argument('--approved_dir', default='approved', help='Approved directory')
+    parser.add_argument('--rejected_dir', default='rejected', help='Rejected directory')
     
     args = parser.parse_args()
-    
-    # Setup logging
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
-    
-    # Initialize and run
-    runner = Florence2Runner(args.model_path)
-    runner.process_directory(args.input_dir, args.output_dir)
+    ReviewGUI(args.review_dir, args.approved_dir, args.rejected_dir).root.mainloop()
 
 if __name__ == "__main__":
     main()
