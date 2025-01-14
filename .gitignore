@@ -1,8 +1,4 @@
-echo "# Data directories
 data/
-*.png
-*.json
-!requirements.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
