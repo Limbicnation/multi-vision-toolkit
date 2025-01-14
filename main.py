@@ -14,7 +14,9 @@ class ReviewGUI:
         self.review_dir = review_dir
         self.approved_dir = approved_dir 
         self.rejected_dir = rejected_dir
-        for dir_path in [approved_dir, rejected_dir]:
+        
+        # Create all required directories
+        for dir_path in [review_dir, approved_dir, rejected_dir]:
             os.makedirs(dir_path, exist_ok=True)
         
         # Initialize window
@@ -51,6 +53,10 @@ class ReviewGUI:
         
     def load_items(self):
         self.items = []
+        if not os.path.exists(self.review_dir):
+            print(f"Review directory not found: {self.review_dir}")
+            return
+            
         for f in os.listdir(self.review_dir):
             if f.endswith('_for_review.json'):
                 base = f.replace('_for_review.json', '')
@@ -63,6 +69,8 @@ class ReviewGUI:
         self.current = 0
         if self.items:
             self.show_current()
+        else:
+            print("No items found for review. Please add files with '_for_review.json' and '_original.png' suffixes.")
             
     def show_current(self):
         if self.items:

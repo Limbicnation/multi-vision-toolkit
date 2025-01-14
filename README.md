@@ -33,9 +33,23 @@ mkdir -p data/{review,approved,rejected}
 mkdir -p models/cache
 ```
 
-### 3. Run the Review GUI
+### 3. Prepare Review Files
+Each image for review needs two files:
+- Image file: `[name]_original.png`
+- Metadata file: `[name]_for_review.json`
+
+Example JSON structure:
+```json
+{
+    "results": {
+        "caption": "Description of the image"
+    }
+}
+```
+
+### 4. Run the Review GUI
 ```bash
-python review_gui.py \
+python main.py \
     --review_dir data/review \
     --approved_dir data/approved \
     --rejected_dir data/rejected
@@ -46,22 +60,24 @@ The review interface provides an easy way to manage Florence-2 predictions:
 
 - **View Images**: Browse through predicted images with captions
 - **Keyboard Shortcuts**:
-  - `A` - Approve prediction
-  - `R` - Reject prediction
+  - `A` - Approve prediction (moves files to approved directory)
+  - `R` - Reject prediction (moves files to rejected directory)
 - **File Management**: Automatically moves files to approved/rejected directories
-- **JSON Updates**: Maintains prediction metadata with review status
+- **JSON Updates**: Maintains prediction metadata with review status and timestamp
 
 ## 📁 Directory Structure
 ```
 project_root/
-├── data/
-│   ├── review/      # Items pending review
-│   ├── approved/    # Approved predictions
-│   └── rejected/    # Rejected predictions
+├── data/               # Not tracked in git
+│   ├── review/        # Items pending review
+│   ├── approved/      # Approved predictions
+│   └── rejected/      # Rejected predictions
 ├── models/
-│   └── cache/       # Model cache
-├── review_gui.py    # GUI interface
-└── requirements.txt # Project dependencies
+│   └── cache/         # Model cache (not tracked)
+├── main.py            # Review GUI implementation
+├── requirements.txt   # Project dependencies
+├── LICENSE           # Apache 2.0 license
+└── README.md         # This file
 ```
 
 ## 🔧 Requirements
