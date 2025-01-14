@@ -8,77 +8,93 @@ A comprehensive Python toolkit for local deployment of Microsoft's Florence-2 vi
 - Multi-level image captioning
 - Dense region captioning & OCR
 - Batch processing support
-- Easy-to-use CLI interface
+- Easy-to-use GUI interface for review
+- CLI interface for automation
 
 ## 🛠️ Quick Start
-```python
-from florence2_toolkit import Florence2Runner
 
-# Initialize the model
-runner = Florence2Runner()
-
-# Process an image
-results = runner.predict(image, '<CAPTION>')
-```
-
-## 🔧 Implementation Steps
-
-### 1. Environment Setup
+### 1. Create Conda Environment
 ```bash
-# Install dependencies
+# Create new conda environment with Python 3.11
+conda create -n florence2-env python=3.11
+conda activate florence2-env
+
+# Install PyTorch with CUDA support
+conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+
+# Install other dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Create Test Directories
+### 2. Setup Project Structure
 ```bash
-mkdir -p test_images/input test_images/output
+# Create necessary directories
+mkdir -p data/{review,approved,rejected}
+mkdir -p models/cache
 ```
 
-### 3. Prepare Test Data
-```bash
-# Copy some test images to input folder
-cp path/to/your/images/*.jpg test_images/input/
+### 3. Prepare Review Files
+Each image for review needs two files:
+- Image file: `[name]_original.png`
+- Metadata file: `[name]_for_review.json`
+
+Example JSON structure:
+```json
+{
+    "results": {
+        "caption": "Description of the image"
+    }
+}
 ```
 
-### 4. Run the Script
+### 4. Run the Review GUI
 ```bash
 python main.py \
-    --model_path "florence-2" \
-    --input_dir "test_images/input" \
-    --output_dir "test_images/output"
+    --review_dir data/review \
+    --approved_dir data/approved \
+    --rejected_dir data/rejected
 ```
 
-### 5. Check Results
-```bash
-ls -l test_images/output/
+## 💻 GUI Usage
+The review interface provides an easy way to manage Florence-2 predictions:
+
+- **View Images**: Browse through predicted images with captions
+- **Keyboard Shortcuts**:
+  - `A` - Approve prediction (moves files to approved directory)
+  - `R` - Reject prediction (moves files to rejected directory)
+- **File Management**: Automatically moves files to approved/rejected directories
+- **JSON Updates**: Maintains prediction metadata with review status and timestamp
+
+## 📁 Directory Structure
+```
+project_root/
+├── data/               # Not tracked in git
+│   ├── review/        # Items pending review
+│   ├── approved/      # Approved predictions
+│   └── rejected/      # Rejected predictions
+├── models/
+│   └── cache/         # Model cache (not tracked)
+├── main.py            # Review GUI implementation
+├── requirements.txt   # Project dependencies
+├── LICENSE           # Apache 2.0 license
+└── README.md         # This file
 ```
 
-The script will:
-- Load all images from `test_images/input`
-- Process each image through Florence-2 model
-- Save results to `test_images/output`
-- Log progress in console
-
-### Output Structure
-```
-test_images/output/
-├── image1_boxes.png        # Visualization of detected objects
-├── image1_results.json     # Detailed analysis results
-├── image2_boxes.png
-└── image2_results.json
-```
+## 🔧 Requirements
+- Python 3.11 (recommended, 3.12 not yet supported)
+- PyTorch 2.0.0+
+- transformers 4.36.0+
+- Pillow 9.0.0+
+- matplotlib 3.5.0+
+- requests 2.25.0+
+- numpy 1.21.0+
 
 ## 💡 Use Cases
-- Automated image analysis
-- Content tagging and organization
-- Visual search applications
+- Prediction review and validation
+- Dataset curation
+- Quality control for model outputs
 - Research and development
-- Dataset creation for ML/AI
-
-## 📦 Installation
-```bash
-pip install florence2-vision-toolkit
-```
+- Training data verification
 
 ## 📄 License
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.

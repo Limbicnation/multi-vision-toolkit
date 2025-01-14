@@ -1,3 +1,16 @@
+# Data and model directories
+data/
+models/cache/
+
+# Image and JSON files
+*.png
+*.json
+!requirements.txt
+
+# VS Code
+.vscode/
+*.code-workspace
+.history/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
