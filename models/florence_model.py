@@ -15,22 +15,15 @@ class Florence2Model(BaseVisionModel):
 
     def _setup_model(self) -> None:
         try:
-            logger.info("Loading Florence-2 model...")
             self.model = AutoModelForCausalLM.from_pretrained(
-                "microsoft/Florence-2-large",
-                torch_dtype=self.torch_dtype,
-                trust_remote_code=True,
-                device_map="auto"  # Better device handling
-            )
-            
-            self.processor = AutoProcessor.from_pretrained(
-                "microsoft/Florence-2-large",
-                trust_remote_code=True
-            )
-            logger.info(f"Florence-2 model loaded successfully on {self.device}!")
+            "microsoft/Florence-2-large",
+            torch_dtype=self.torch_dtype,
+            trust_remote_code=True,
+            device_map="balanced"  # Changed from "auto"
+        )
         except Exception as e:
             logger.error(f"Failed to load Florence-2 model: {str(e)}")
-            raise
+        raise
 
     def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
         try:

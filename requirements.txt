@@ -1,9 +1,8 @@
 torch>=2.0.0
-transformers>=4.36.0
+transformers @ git+https://github.com/huggingface/transformers.git
+torchvision>=0.15.0
 Pillow>=9.0.0
-matplotlib>=3.5.0
-requests>=2.25.0
-numpy>=1.21.0
-opencv-python
 accelerate>=0.25.0
 safetensors>=0.4.0
+opencv-python>=4.8.0
+matplotlib>=3.5.0
