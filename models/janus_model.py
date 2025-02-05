@@ -1,46 +1,22 @@
-# models/janus_model.py
-from .base_model import BaseVisionModel
-from transformers import AutoProcessor, AutoModelForCausalLM
-from PIL import Image
+from models.base_model import BaseVisionModel
 import logging
 from typing import Tuple, Optional
+from transformers import AutoModelForCausalLM, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
 class JanusModel(BaseVisionModel):
-    def _setup_model(self) -> None:
-        try:
-            logger.info("Loading Janus-Pro model...")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                "deepseek-ai/janus-pro-1b",
-                torch_dtype=self.torch_dtype,
-                trust_remote_code=True,
-                use_safetensors=True
-            ).to(self.device)
-            
-            self.processor = AutoProcessor.from_pretrained(
-                "deepseek-ai/janus-pro-1b",
-                trust_remote_code=True
-            )
-            logger.info("Janus-Pro model loaded successfully!")
-        except Exception as e:
-            logger.error(f"Failed to load Janus-Pro model: {str(e)}")
-            raise
-
     def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
         try:
-            image = Image.open(image_path)
-            image = image.resize((384, 384))
+            self.model = AutoModelForCausalLM.from_pretrained(
+                "deepseek-ai/janus-pro-1b",
+                torch_dtype=self.dtype,
+                device_map="auto",
+                trust_remote_code=True
+            )
+            self.processor = AutoProcessor.from_pretrained("deepseek-ai/janus-pro-1b")
             
-            inputs = self.processor(
-                images=image,
-                text="Analyze this image in detail. Describe what you see and identify key objects.",
-                return_tensors="pt",
-                padding=True
-            ).to(self.device, self.torch_dtype)
-
-            output_ids = self.model.generate(
-                **inputs,
+            outputs = self.model.generate(
                 max_new_tokens=256,
                 num_beams=5,
                 length_penalty=1.0,
@@ -50,8 +26,8 @@ class JanusModel(BaseVisionModel):
             )
             
             caption = self.processor.batch_decode(
-                output_ids, 
-                skip_special_tokens=True,
+                outputs,
+                (function) clean_up_tokenization_spaces: Any,
                 clean_up_tokenization_spaces=True
             )[0]
             
@@ -59,7 +35,7 @@ class JanusModel(BaseVisionModel):
             description = f"Description: {caption}"
             
             return description, caption
-
+            
         except Exception as e:
             logger.error(f"Error analyzing image with Janus-Pro: {str(e)}")
             return "Error analyzing image.", None
