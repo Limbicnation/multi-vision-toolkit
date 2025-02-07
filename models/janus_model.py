@@ -2,7 +2,7 @@
 from models.base_model import BaseVisionModel
 import logging
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForCausalLM, AutoProcessor, BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
 from typing import Tuple, Optional
 import os
@@ -11,11 +11,14 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 class JanusModel(BaseVisionModel):
-    """Janus vision model implementation with improved error handling and configuration."""
+    """
+    Vision model implementation using BLIP model for image understanding.
+    This is a publicly available model that doesn't require authentication.
+    """
     
-    def __init__(self, model_path: str = "janhq/janus-1-7b"):
+    def __init__(self, model_path: str = "Salesforce/blip-image-captioning-large"):
         """
-        Initialize the Janus model.
+        Initialize the model.
         
         Args:
             model_path (str): HuggingFace model path
@@ -23,87 +26,33 @@ class JanusModel(BaseVisionModel):
         self.model_path = model_path
         super().__init__()
 
-    def _load_token(self) -> Optional[str]:
-        """
-        Load HuggingFace token from environment with fallback mechanisms.
-        """
-        try:
-            # Try loading from environment first
-            token = os.getenv('HF_TOKEN')
-            if token:
-                return token
-                
-            # Try loading from .env file if python-dotenv is available
-            try:
-                from dotenv import load_dotenv
-                env_path = Path('.env')
-                if env_path.exists():
-                    load_dotenv()
-                    token = os.getenv('HF_TOKEN')
-                    if token:
-                        return token
-            except ImportError:
-                logger.warning("python-dotenv not installed. Skipping .env file loading.")
-                
-            logger.warning("No HF_TOKEN found in environment or .env file")
-            return None
-            
-        except Exception as e:
-            logger.error(f"Error loading token: {str(e)}")
-            return None
-
     def _setup_model(self) -> None:
-        """
-        Set up the Janus model with improved error handling and configuration.
-        """
+        """Set up the BLIP model."""
         try:
-            logger.info(f"Loading Janus model from {self.model_path}...")
+            logger.info(f"Loading model from {self.model_path}...")
             
-            # Load token
-            token = self._load_token()
-            
-            # Model configuration with safe defaults
-            model_kwargs = {
-                "torch_dtype": self.torch_dtype,
-                "device_map": "balanced",
-                "trust_remote_code": True,
-            }
-            
-            # Only enable 8-bit loading if CUDA is available
-            if torch.cuda.is_available():
-                model_kwargs["load_in_8bit"] = True
-            
-            # Add token if available
-            if token:
-                model_kwargs["token"] = token
-            
-            # Initialize model and processor
             try:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.model_path,
-                    **model_kwargs
-                )
-            except Exception as e:
-                logger.error(f"Failed to load model: {str(e)}")
-                raise RuntimeError("Model initialization failed") from e
-                
-            try:
-                self.processor = AutoProcessor.from_pretrained(
-                    self.model_path,
-                    trust_remote_code=True,
-                    token=token if token else None
-                )
+                self.processor = BlipProcessor.from_pretrained(self.model_path)
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")
                 raise RuntimeError("Processor initialization failed") from e
                 
+            try:
+                self.model = BlipForConditionalGeneration.from_pretrained(
+                    self.model_path,
+                    torch_dtype=self.torch_dtype
+                ).to(self.device)
+            except Exception as e:
+                logger.error(f"Failed to load model: {str(e)}")
+                raise RuntimeError("Model initialization failed") from e
+                
         except Exception as e:
-            logger.error(f"Failed to initialize Janus model: {str(e)}")
+            logger.error(f"Failed to initialize model: {str(e)}")
             raise
 
     def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
         """
-        Analyze an image using the Janus model.
+        Analyze an image using the BLIP model.
         
         Args:
             image_path (str): Path to the image file
@@ -126,64 +75,53 @@ class JanusModel(BaseVisionModel):
                 logger.error(f"Error loading image {image_path}: {str(e)}")
                 return "Error: Failed to load or process image.", None
                 
-            # Prepare model inputs
-            try:
-                inputs = self.processor(
-                    images=image,
-                    text="Describe this image in detail.",
-                    return_tensors="pt"
-                ).to(self.device)
-            except Exception as e:
-                logger.error(f"Error processing image: {str(e)}")
-                return "Error: Failed to process image for model input.", None
-            
             # Generate caption
             try:
+                # Prepare inputs
+                inputs = self.processor(
+                    images=image, 
+                    return_tensors="pt"
+                ).to(self.device)
+                
+                # Generate caption
                 with torch.inference_mode():
-                    outputs = self.model.generate(
-                        **inputs,
-                        max_new_tokens=256,
+                    generated_ids = self.model.generate(
+                        pixel_values=inputs.pixel_values,
+                        max_length=50,
                         num_beams=5,
                         length_penalty=1.0,
                         temperature=0.7,
                         do_sample=True,
-                        top_p=0.9,
-                        use_cache=True,
-                        pad_token_id=self.processor.tokenizer.pad_token_id,
-                        eos_token_id=self.processor.tokenizer.eos_token_id
+                        top_p=0.9
                     )
+                
+                # Decode caption
+                caption = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+                caption = self.clean_output(caption)
+                
+                # Prepare detailed description
+                description = f"Description: {caption}"
+                
+                return description, caption
+                
             except Exception as e:
                 logger.error(f"Error generating caption: {str(e)}")
                 return "Error: Failed to generate image description.", None
-            
-            # Process output
-            try:
-                caption = self.processor.decode(outputs[0], skip_special_tokens=True)
-                caption = self.clean_output(caption)
-                description = f"Description: {caption}"
-                return description, caption
-            except Exception as e:
-                logger.error(f"Error processing model output: {str(e)}")
-                return "Error: Failed to process model output.", None
                 
         except Exception as e:
-            logger.error(f"Error analyzing image with Janus model: {str(e)}")
+            logger.error(f"Error analyzing image: {str(e)}")
             return "Error: An unexpected error occurred.", None
 
     @classmethod
     def is_available(cls) -> bool:
         """
         Check if the model can be initialized with current environment.
-        
-        Returns:
-            bool: True if model can be initialized, False otherwise
         """
         try:
-            # Check for required packages
             import torch
             import transformers
             
-            # Check CUDA availability for 8-bit loading
+            # Check CUDA availability
             has_cuda = torch.cuda.is_available()
             if not has_cuda:
                 logger.warning("CUDA not available. Model will run in CPU mode with reduced performance.")

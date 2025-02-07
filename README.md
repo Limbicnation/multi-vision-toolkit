@@ -1,11 +1,16 @@
 # Multi-Vision Toolkit 🖼️ 🤖
 
-A comprehensive Python toolkit for local deployment of state-of-the-art vision models (Florence-2 and Janus-Pro). Process images with advanced computer vision capabilities including object detection, image captioning, and visual analysis.
+A comprehensive Python toolkit for local deployment of state-of-the-art vision models (Florence-2 and BLIP). Process images with advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 ## 🚀 Key Features
 - Supports multiple vision models:
-  - Florence-2: Object detection & visual analysis
-  - Janus-Pro-1B: Enhanced image captioning
+  - Florence-2: Advanced vision tasks including object detection, OCR, and visual analysis
+  - BLIP: High-quality image captioning and visual understanding
+- Multi-task capabilities:
+  - Image captioning
+  - Object detection
+  - OCR (Florence-2)
+  - Visual Question Answering (Florence-2)
 - Batch processing support
 - Easy-to-use GUI interface with model switching
 - Dataset preparation for AI training
@@ -17,7 +22,7 @@ A comprehensive Python toolkit for local deployment of state-of-the-art vision m
 - Python 3.11
 - CUDA-capable GPU (recommended)
 - At least 8GB VRAM for Florence-2
-- At least 4GB VRAM for Janus-Pro-1B
+- At least 4GB VRAM for BLIP
 
 ### Option 1: Using pip (Recommended)
 ```bash
@@ -28,16 +33,8 @@ conda activate vision-env
 # Install PyTorch with CUDA support
 conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
 
-# Install vision dependencies
-pip install timm einops
-
-# Install remaining dependencies
+# Install core dependencies
 pip install -r requirements.txt
-
-# Update transformers (if needed for Janus-Pro)
-pip install --upgrade transformers
-# or
-pip install git+https://github.com/huggingface/transformers.git
 ```
 
 ### Option 2: Manual Installation
@@ -52,11 +49,13 @@ conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
 # Install core dependencies
 pip install transformers>=4.36.0 
 pip install Pillow>=9.0.0 
-pip install matplotlib>=3.5.0 
-pip install opencv-python 
-pip install accelerate 
-pip install safetensors
-pip install timm einops
+pip install timm>=0.9.12 
+pip install einops>=0.7.0
+pip install python-dotenv>=1.0.0
+pip install opencv-python>=4.8.0
+pip install matplotlib>=3.5.0
+pip install accelerate>=0.25.0
+pip install safetensors>=0.4.0
 ```
 
 ## 📁 Project Setup
@@ -77,45 +76,75 @@ python main.py --review_dir data/review --approved_dir data/approved --rejected_
 # Use Florence-2 (default)
 python main.py --review_dir data/review --model florence2
 
-# Use Janus-Pro
-python main.py --review_dir data/review --model janus
+# Use BLIP
+python main.py --review_dir data/review --model blip
 ```
 
 ### With Trigger Word
 ```bash
-python main.py --review_dir data/review --trigger_word "your_trigger" --model janus
+python main.py --review_dir data/review --trigger_word "your_trigger" --model florence2
+```
+
+### Florence-2 Model Variants
+```bash
+# Use large model (0.77B parameters)
+python main.py --review_dir data/review --model florence2 --variant large
+
+# Use base model (0.23B parameters)
+python main.py --review_dir data/review --model florence2 --variant base
 ```
 
 ## 💻 GUI Features
 - Model switching dropdown
 - Image preview
-- Caption generation
+- Multi-task analysis display
 - A/R keys for approve/reject
 - Automatic metadata tracking
+- Progress tracking
 
 ## 📝 Supported Formats
 - Images: `.jpg`, `.jpeg`, `.png`
 - Auto-resizing enabled
 - Metadata: `.json`, `.txt`
 
+## 🔗 Model Capabilities
+
+### Florence-2
+- Advanced image captioning
+- Object detection
+- OCR
+- Visual Question Answering
+- Zero-shot learning capabilities
+- Supports both base (0.23B) and large (0.77B) variants
+
+### BLIP
+- High-quality image captioning
+- Visual understanding
+- Robust performance on various image types
+- Public model with no authentication required
+
 ## 🔧 Troubleshooting
 
 ### Common Issues
-1. `ModuleNotFoundError: No module named 'timm'` or `'einops'`
-   ```bash
-   pip install timm einops
-   ```
+1. CUDA/GPU Memory Issues
+   - For Florence-2 base model: Use `--variant base` for lower VRAM usage
+   - Ensure no other GPU processes are running
+   - Monitor GPU memory usage with `nvidia-smi`
 
-2. Transformers version issues with Janus-Pro
-   ```bash
-   pip install --upgrade transformers
-   # or
-   pip install git+https://github.com/huggingface/transformers.git
-   ```
+2. Model Loading Issues
+   - Clear transformers cache: `rm -rf ~/.cache/huggingface/`
+   - Update transformers: `pip install --upgrade transformers`
+   - Check internet connection for model downloads
 
-3. CUDA/GPU issues
-   - Ensure NVIDIA drivers are up to date
-   - Check CUDA compatibility with PyTorch version
+3. Image Processing Errors
+   - Verify image format support
+   - Check image file permissions
+   - Ensure sufficient disk space
+
+## 📈 Performance Notes
+- Florence-2 large (0.77B): Best for complex visual tasks
+- Florence-2 base (0.23B): Good balance of performance and resource usage
+- BLIP: Excellent for image captioning, lower resource requirements
 
 ## 📄 License
 Apache License 2.0
