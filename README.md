@@ -1,6 +1,10 @@
-# Multi-Vision Toolkit 🖼️ 🤖
-
+Multi-Vision Toolkit 🖼️ 🤖
 A comprehensive Python toolkit for local deployment of state-of-the-art vision models (Florence-2 and BLIP). Process images with advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
+🏗️ Model Architectures
+Florence-2 Model Architecture
+<img src="images/florence2-toolkit-diagram-florence.jpg" width="1024" alt="Florence-2 Model Architecture">
+BLIP Model Architecture
+<img src="images/florence2-toolkit-diagram-janus.jpg" width="1024" alt="BLIP Model Architecture">
 
 ## 🚀 Key Features
 - Supports multiple vision models:
