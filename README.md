@@ -1,98 +1,153 @@
-# Florence2-vision-toolkit 🖼️ 🤖
+# Multi-Vision Toolkit 🖼️ 🤖
 
-A comprehensive Python toolkit for local deployment of Microsoft's Florence-2 vision model. Process images with state-of-the-art computer vision capabilities including object detection, image captioning, and visual analysis.
+A comprehensive Python toolkit for local deployment of state-of-the-art vision models (Florence-2 and BLIP). Process images with advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 ## 🚀 Key Features
-- Local processing of images with Florence-2 model
-- Object detection with visualization
-- Multi-level image captioning
-- Dense region captioning & OCR
+- Supports multiple vision models:
+  - Florence-2: Advanced vision tasks including object detection, OCR, and visual analysis
+  - BLIP: High-quality image captioning and visual understanding
+- Multi-task capabilities:
+  - Image captioning
+  - Object detection
+  - OCR (Florence-2)
+  - Visual Question Answering (Florence-2)
 - Batch processing support
-- Easy-to-use GUI interface for review
+- Easy-to-use GUI interface with model switching
 - Dataset preparation for AI training
+- JSON metadata tracking
 
-## 🛠️ Quick Start
+## 🛠️ Installation
 
-### 1. Create Conda Environment
+### Prerequisites
+- Python 3.11
+- CUDA-capable GPU (recommended)
+- At least 8GB VRAM for Florence-2
+- At least 4GB VRAM for BLIP
+
+### Option 1: Using pip (Recommended)
 ```bash
-# Create new conda environment with Python 3.11
-conda create -n florence2-env python=3.11
-conda activate florence2-env
+# Create conda environment
+conda create -n vision-env python=3.11
+conda activate vision-env
 
 # Install PyTorch with CUDA support
 conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
 
-# Install dependencies
-pip install torch transformers pillow einops timm
+# Install core dependencies
+pip install -r requirements.txt
 ```
 
-### 2. Setup Project Structure
+### Option 2: Manual Installation
 ```bash
-# Create necessary directories
+# Create conda environment
+conda create -n vision-env python=3.11
+conda activate vision-env
+
+# Install PyTorch with CUDA support
+conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+
+# Install core dependencies
+pip install transformers>=4.36.0 
+pip install Pillow>=9.0.0 
+pip install timm>=0.9.12 
+pip install einops>=0.7.0
+pip install python-dotenv>=1.0.0
+pip install opencv-python>=4.8.0
+pip install matplotlib>=3.5.0
+pip install accelerate>=0.25.0
+pip install safetensors>=0.4.0
+```
+
+## 📁 Project Setup
+```bash
+# Create directories
 mkdir -p data/{review,approved,rejected}
 ```
 
-### 3. Prepare Dataset
-Place your images in the review directory:
-- Supported formats: `.jpg`, `.jpeg`, `.png`
-- Images will be automatically resized during processing
-- No manual cropping required
-- Webp format is not supported
+## 🎯 Usage
 
-#### Option A: Automatic Caption Generation
-Simply place images in the review directory:
+### Basic Usage
 ```bash
-cp your_images/*.jpg data/review/
-```
-The tool will automatically:
-- Generate captions using Florence-2
-- Create matching .txt files
-- Move processed files to approved/rejected folders
-
-#### Option B: Manual Caption Setup
-For each image, you can optionally create:
-1. A matching .txt file with the same name
-2. A JSON metadata file (automatically created if missing)
-
-Example structure:
-```
-data/review/
-├── image1.jpg
-├── image1.txt          # Optional: Custom caption
-└── image1_for_review.json  # Created automatically
-```
-
-### 4. Run the Review GUI
-```bash
-# Basic usage
 python main.py --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
-
-# With trigger word
-python main.py --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected --trigger_word "your_trigger"
 ```
 
-## 💻 GUI Usage
-- View images and generated captions
-- `A` key: Approve and move to approved directory
-- `R` key: Reject and move to rejected directory
-- Automatic caption file generation
-- JSON metadata tracking
+### With Model Selection
+```bash
+# Use Florence-2 (default)
+python main.py --review_dir data/review --model florence2
 
-## 📁 Directory Structure
-```
-project_root/
-├── data/
-│   ├── review/      # Place images here
-│   ├── approved/    # Approved items
-│   └── rejected/    # Rejected items
-└── main.py         # GUI implementation
+# Use BLIP
+python main.py --review_dir data/review --model blip
 ```
 
-## 🔧 Requirements
-- Python 3.11
-- PyTorch 2.0.0+
-- transformers 4.36.0+
-- Pillow, einops, timm
+### With Trigger Word
+```bash
+python main.py --review_dir data/review --trigger_word "your_trigger" --model florence2
+```
+
+### Florence-2 Model Variants
+```bash
+# Use large model (0.77B parameters)
+python main.py --review_dir data/review --model florence2 --variant large
+
+# Use base model (0.23B parameters)
+python main.py --review_dir data/review --model florence2 --variant base
+```
+
+## 💻 GUI Features
+- Model switching dropdown
+- Image preview
+- Multi-task analysis display
+- A/R keys for approve/reject
+- Automatic metadata tracking
+- Progress tracking
+
+## 📝 Supported Formats
+- Images: `.jpg`, `.jpeg`, `.png`
+- Auto-resizing enabled
+- Metadata: `.json`, `.txt`
+
+## 🔗 Model Capabilities
+
+### Florence-2
+- Advanced image captioning
+- Object detection
+- OCR
+- Visual Question Answering
+- Zero-shot learning capabilities
+- Supports both base (0.23B) and large (0.77B) variants
+
+### BLIP
+- High-quality image captioning
+- Visual understanding
+- Robust performance on various image types
+- Public model with no authentication required
+
+## 🔧 Troubleshooting
+
+### Common Issues
+1. CUDA/GPU Memory Issues
+   - For Florence-2 base model: Use `--variant base` for lower VRAM usage
+   - Ensure no other GPU processes are running
+   - Monitor GPU memory usage with `nvidia-smi`
+
+2. Model Loading Issues
+   - Clear transformers cache: `rm -rf ~/.cache/huggingface/`
+   - Update transformers: `pip install --upgrade transformers`
+   - Check internet connection for model downloads
+
+3. Image Processing Errors
+   - Verify image format support
+   - Check image file permissions
+   - Ensure sufficient disk space
+
+## 📈 Performance Notes
+- Florence-2 large (0.77B): Best for complex visual tasks
+- Florence-2 base (0.23B): Good balance of performance and resource usage
+- BLIP: Excellent for image captioning, lower resource requirements
 
 ## 📄 License
-Apache License 2.0 - see LICENSE file for details.
+Apache License 2.0
+
+## 🤝 Contributing
+Pull requests welcome! See CONTRIBUTING.md for guidelines.

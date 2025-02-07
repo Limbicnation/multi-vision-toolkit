@@ -1,7 +1,14 @@
-torch>=2.0.0 
-transformers>=4.36.0 
-Pillow>=9.0.0 
-matplotlib>=3.5.0 
-requests>=2.25.0 
-numpy>=1.21.0
-opencv-python
+torch>=2.0.0
+torchvision>=0.15.0
+transformers>=4.36.0
+Pillow>=9.0.0
+timm>=0.9.12
+einops>=0.7.0
+python-dotenv>=1.0.0
+opencv-python>=4.8.0
+matplotlib>=3.5.0
+accelerate>=0.25.0
+safetensors>=0.4.0
+tensorboard>=2.15.0 
+numpy>=1.24.0      
+tqdm>=4.66.0        s
