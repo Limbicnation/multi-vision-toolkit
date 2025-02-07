@@ -1,104 +1,174 @@
-from .base_model import BaseVisionModel
-from transformers import AutoProcessor, AutoModelForCausalLM
-from PIL import Image
-import torch
+# models/florence_model.py
+from models.base_model import BaseVisionModel
+from typing import Tuple, Optional, List
 import logging
-from typing import Tuple, Optional
+import torch
+import importlib
+from PIL import Image
+import os
 
 logger = logging.getLogger(__name__)
 
 class Florence2Model(BaseVisionModel):
+    """Florence-2 vision model implementation following official guidelines."""
+    
+    REQUIRED_PACKAGES = {
+        'transformers': 'transformers',
+        'timm': 'timm',
+        'einops': 'einops',
+        'torch': 'torch',
+        'PIL': 'Pillow'
+    }
+
     def __init__(self):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.torch_dtype = torch.float16 if self.device == "cuda" else torch.float32
-        self._setup_model()
+        """Initialize Florence-2 model with dependency checks."""
+        self._check_dependencies()
+        super().__init__()
+
+    @classmethod
+    def _check_dependencies(cls) -> None:
+        """Check for required dependencies and provide clear installation instructions."""
+        missing_packages = []
+        for package, pip_name in cls.REQUIRED_PACKAGES.items():
+            try:
+                importlib.import_module(package)
+            except ImportError:
+                missing_packages.append((package, pip_name))
+
+        if missing_packages:
+            install_command = "pip install " + " ".join(pkg[1] for pkg in missing_packages)
+            error_msg = (
+                f"Missing required packages: {', '.join(pkg[0] for pkg in missing_packages)}\n"
+                f"Please install them using:\n{install_command}"
+            )
+            logger.error(error_msg)
+            raise RuntimeError(error_msg)
 
     def _setup_model(self) -> None:
+        """Set up the Florence-2 model following official implementation."""
         try:
-            self.model = AutoModelForCausalLM.from_pretrained(
-            "microsoft/Florence-2-large",
-            torch_dtype=self.torch_dtype,
-            trust_remote_code=True,
-            device_map="balanced"  # Changed from "auto"
-        )
+            from transformers import AutoProcessor, AutoModelForCausalLM
+            
+            logger.info("Loading Florence-2 model...")
+            model_path = "microsoft/Florence-2-large"
+            
+            # Initialize model without device_map for proper loading
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    torch_dtype=self.torch_dtype,
+                    trust_remote_code=True
+                ).to(self.device)  # Move to device after initialization
+            except Exception as e:
+                logger.error(f"Failed to load model: {str(e)}")
+                raise RuntimeError("Model initialization failed") from e
+
+            try:
+                self.processor = AutoProcessor.from_pretrained(
+                    model_path,
+                    trust_remote_code=True
+                )
+            except Exception as e:
+                logger.error(f"Failed to load processor: {str(e)}")
+                raise RuntimeError("Processor initialization failed") from e
+
         except Exception as e:
-            logger.error(f"Failed to load Florence-2 model: {str(e)}")
-        raise
+            error_msg = f"Failed to load Florence-2 model: {str(e)}"
+            logger.error(error_msg)
+            raise RuntimeError(error_msg) from e
 
     def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
+        """Analyze an image using the Florence-2 model."""
         try:
-            # Load and verify image
+            # Validate image path
+            if not os.path.exists(image_path):
+                logger.error(f"Image file not found: {image_path}")
+                return "Error: Image file not found.", None
+
+            # Load and validate image
             try:
                 image = Image.open(image_path)
-                image = image.convert('RGB')  # Ensure RGB format
+                if image.mode != 'RGB':
+                    image = image.convert('RGB')
             except Exception as e:
                 logger.error(f"Error loading image {image_path}: {str(e)}")
-                return "Error loading image.", None
+                return "Error: Failed to load or process image.", None
 
             # Generate detailed caption
             try:
-                inputs = self.processor(
+                # Caption generation
+                caption_inputs = self.processor(
                     text="<image>Describe this image in detail:",
                     images=image,
                     return_tensors="pt"
                 ).to(self.device, self.torch_dtype)
 
                 with torch.inference_mode():
-                    generated_ids = self.model.generate(
-                        input_ids=inputs["input_ids"],
-                        pixel_values=inputs["pixel_values"],
+                    caption_ids = self.model.generate(
+                        input_ids=caption_inputs["input_ids"],
+                        pixel_values=caption_inputs["pixel_values"],
                         max_new_tokens=256,
-                        num_beams=5,
-                        length_penalty=1.0,
-                        temperature=0.7,
+                        num_beams=3,
                         do_sample=True,
+                        temperature=0.7,
                         top_p=0.9
                     )
                 
                 caption = self.processor.batch_decode(
-                    generated_ids,
+                    caption_ids,
                     skip_special_tokens=True
                 )[0]
-            except Exception as e:
-                logger.error(f"Error generating caption: {str(e)}")
-                return "Error generating caption.", None
 
-            # Object detection
-            try:
-                inputs_od = self.processor(
+                # Object detection
+                od_inputs = self.processor(
                     text="<OD>",
                     images=image,
                     return_tensors="pt"
                 ).to(self.device, self.torch_dtype)
 
                 with torch.inference_mode():
-                    generated_ids_od = self.model.generate(
-                        input_ids=inputs_od["input_ids"],
-                        pixel_values=inputs_od["pixel_values"],
+                    od_ids = self.model.generate(
+                        input_ids=od_inputs["input_ids"],
+                        pixel_values=od_inputs["pixel_values"],
                         max_new_tokens=128,
                         num_beams=3,
                         do_sample=False
                     )
                 
-                objects_text = self.processor.post_process_generation(
-                    self.processor.batch_decode(generated_ids_od, skip_special_tokens=False)[0],
+                od_text = self.processor.batch_decode(od_ids, skip_special_tokens=False)[0]
+                objects = self.processor.post_process_generation(
+                    od_text,
                     task="<OD>",
                     image_size=(image.width, image.height)
                 )
-            except Exception as e:
-                logger.error(f"Error detecting objects: {str(e)}")
-                objects_text = []
 
-            # Clean and format output
-            caption = self.clean_output(caption)
-            objects = [self.clean_output(obj) for obj in objects_text if obj and obj.strip()]
-            
-            description = f"Description: {caption}"
-            if objects:
-                description += f"\n\nDetected objects: {', '.join(objects)}"
-            
-            return description, caption
+            except Exception as e:
+                logger.error(f"Error generating analysis: {str(e)}")
+                return "Error: Failed to generate image analysis.", None
+
+            # Process and return results
+            try:
+                caption = self.clean_output(caption)
+                objects_str = ", ".join(str(obj) for obj in objects) if objects else ""
+                
+                description = f"Description: {caption}"
+                if objects_str:
+                    description += f"\n\nDetected objects: {objects_str}"
+                
+                return description, caption
+            except Exception as e:
+                logger.error(f"Error processing model output: {str(e)}")
+                return "Error: Failed to process model output.", None
 
         except Exception as e:
             logger.error(f"Error analyzing image with Florence-2: {str(e)}")
-            return "Error analyzing image.", None
+            return "Error: An unexpected error occurred.", None
+
+    @classmethod
+    def is_available(cls) -> bool:
+        """Check if the model can be initialized with current environment."""
+        try:
+            cls._check_dependencies()
+            return True
+        except Exception:
+            return False
