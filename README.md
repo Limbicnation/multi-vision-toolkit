@@ -1,8 +1,10 @@
 # Multi-Vision Toolkit 🖼️ 🤖
+ A toolkit for local deployment of state-of-the-art vision models (Florence-2 and BLIP), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
-A toolkit for local deployment of state-of-the-art vision models (Florence-2 and BLIP), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
-
-<img src="images/florence2-toolkit-diagram-florence.jpg" width="512" alt="Florence-2 Model Architecture">
+<p align="center">
+  <img src="images/Vision-Toolkit_DarkMode_2025-03-05.jpg" width="49%" alt="Vision Toolkit Dark Mode">
+  <img src="images/Vision-Toolkit_LightMode_2025-03-05.jpg" width="49%" alt="Vision Toolkit Light Mode">
+</p>
 
 ## 🚀 Key Features
 
