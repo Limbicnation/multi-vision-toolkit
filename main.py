@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
 import torch
+import re
 
 # Configure logging with both file and console handlers
 logging.basicConfig(
@@ -30,6 +31,8 @@ DARK_ACCENT = "#007acc"
 DARK_SECONDARY = "#2d2d2d"
 DARK_BUTTON = "#3c3c3c"
 DARK_BUTTON_ACTIVE = "#505050"
+DARK_APPROVE_BTN = "#2d9440"
+DARK_REJECT_BTN = "#9e3a3a"
 
 LIGHT_BG = "#f0f0f0"
 LIGHT_FG = "#000000"
@@ -37,6 +40,8 @@ LIGHT_ACCENT = "#0078d7"
 LIGHT_SECONDARY = "#e0e0e0"
 LIGHT_BUTTON = "#dddddd"
 LIGHT_BUTTON_ACTIVE = "#cccccc"
+LIGHT_APPROVE_BTN = "#2ecc71"
+LIGHT_REJECT_BTN = "#e74c3c"
 
 def load_environment_from_dotenv():
     """Load environment variables from .env file if available"""
@@ -106,39 +111,67 @@ class ThemeManager:
             self.root.configure(bg=DARK_BG)
             style.configure("TFrame", background=DARK_BG)
             style.configure("TLabel", background=DARK_BG, foreground=DARK_FG)
-            style.configure("TButton", background=DARK_BUTTON, foreground=DARK_FG)
+            style.configure("TButton", foreground=DARK_FG)
             style.map("TButton", background=[("active", DARK_BUTTON_ACTIVE)])
-            style.configure("TCombobox", fieldbackground=DARK_SECONDARY, background=DARK_BUTTON, foreground=DARK_FG)
+            style.configure("TCombobox", fieldbackground=DARK_SECONDARY, foreground=DARK_FG)
             style.map("TCombobox", fieldbackground=[("readonly", DARK_SECONDARY)])
-            style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground=DARK_ACCENT)
-            style.configure("Caption.TLabel", background=DARK_SECONDARY, foreground=DARK_FG, padding=10)
-            style.configure("Primary.TButton", background=DARK_ACCENT, foreground=DARK_FG)
-            style.map("Primary.TButton", background=[("active", DARK_ACCENT)])
+            style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground=DARK_ACCENT, background=DARK_BG)
+            style.configure("Caption.TLabel", foreground=DARK_FG, padding=10, background=DARK_SECONDARY)
+            style.configure("Primary.TButton", foreground=DARK_FG)
+            style.map("Primary.TButton", background=[("active", DARK_APPROVE_BTN)])
+            style.configure("Reject.TButton", foreground=DARK_FG)
+            style.map("Reject.TButton", background=[("active", DARK_REJECT_BTN)])
             style.configure("StatusBar.TFrame", background=DARK_SECONDARY)
             style.configure("StatusBar.TLabel", background=DARK_SECONDARY, foreground=DARK_FG)
+            style.configure("TPanedwindow", background=DARK_BG)
+            style.configure("TNotebook", background=DARK_BG)
+            style.configure("TNotebook.Tab", background=DARK_SECONDARY, foreground=DARK_FG, padding=[10, 2])
+            style.map("TNotebook.Tab", background=[("selected", DARK_ACCENT)], foreground=[("selected", DARK_FG)])
+            style.configure("InfoFrame.TFrame", background=DARK_SECONDARY)
             
             # Set text widgets
             for text_widget in self._find_text_widgets(self.root):
                 text_widget.config(bg=DARK_SECONDARY, fg=DARK_FG, insertbackground=DARK_FG)
+                
+                # Configure text tags
+                text_widget.tag_configure("heading", foreground=DARK_ACCENT, font=("Segoe UI", 11, "bold"))
+                text_widget.tag_configure("subheading", foreground="#00aaff", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("important", foreground="#ffaa00", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("object", foreground="#00ccaa", font=("Segoe UI", 10))
+                text_widget.tag_configure("tag", foreground="#cc88ff", font=("Segoe UI", 10))
         else:
             # Configure light mode
             self.root.configure(bg=LIGHT_BG)
             style.configure("TFrame", background=LIGHT_BG)
             style.configure("TLabel", background=LIGHT_BG, foreground=LIGHT_FG)
-            style.configure("TButton", background=LIGHT_BUTTON, foreground=LIGHT_FG)
+            style.configure("TButton", foreground=LIGHT_FG)
             style.map("TButton", background=[("active", LIGHT_BUTTON_ACTIVE)])
-            style.configure("TCombobox", fieldbackground="white", background=LIGHT_BUTTON, foreground=LIGHT_FG)
+            style.configure("TCombobox", fieldbackground="white", foreground=LIGHT_FG)
             style.map("TCombobox", fieldbackground=[("readonly", "white")])
-            style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground=LIGHT_ACCENT)
-            style.configure("Caption.TLabel", background=LIGHT_SECONDARY, foreground=LIGHT_FG, padding=10)
-            style.configure("Primary.TButton", background=LIGHT_ACCENT, foreground="white")
-            style.map("Primary.TButton", background=[("active", LIGHT_ACCENT)])
+            style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground=LIGHT_ACCENT, background=LIGHT_BG)
+            style.configure("Caption.TLabel", foreground=LIGHT_FG, padding=10, background=LIGHT_SECONDARY)
+            style.configure("Primary.TButton", foreground="white")
+            style.map("Primary.TButton", background=[("active", LIGHT_APPROVE_BTN)])
+            style.configure("Reject.TButton", foreground="white")
+            style.map("Reject.TButton", background=[("active", LIGHT_REJECT_BTN)])
             style.configure("StatusBar.TFrame", background=LIGHT_SECONDARY)
             style.configure("StatusBar.TLabel", background=LIGHT_SECONDARY, foreground=LIGHT_FG)
+            style.configure("TPanedwindow", background=LIGHT_BG)
+            style.configure("TNotebook", background=LIGHT_BG)
+            style.configure("TNotebook.Tab", background=LIGHT_SECONDARY, foreground=LIGHT_FG, padding=[10, 2])
+            style.map("TNotebook.Tab", background=[("selected", LIGHT_ACCENT)], foreground=[("selected", "white")])
+            style.configure("InfoFrame.TFrame", background=LIGHT_SECONDARY)
             
             # Set text widgets
             for text_widget in self._find_text_widgets(self.root):
                 text_widget.config(bg="white", fg=LIGHT_FG, insertbackground=LIGHT_FG)
+                
+                # Configure text tags
+                text_widget.tag_configure("heading", foreground=LIGHT_ACCENT, font=("Segoe UI", 11, "bold"))
+                text_widget.tag_configure("subheading", foreground="#0066cc", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("important", foreground="#cc6600", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("object", foreground="#008866", font=("Segoe UI", 10))
+                text_widget.tag_configure("tag", foreground="#8844cc", font=("Segoe UI", 10))
     
     def _find_text_widgets(self, parent):
         """Find all Text widgets in the widget hierarchy"""
@@ -286,13 +319,13 @@ class ReviewGUI:
         """Setup GUI components with error handling"""
         try:
             # Create main container
-            self.main_frame = ttk.Frame(self.root, padding="10")
-            self.main_frame.pack(fill=tk.BOTH, expand=True)
+            self.main_frame = ttk.Frame(self.root)
+            self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             
             # Create header
             self._setup_header()
             
-            # Create content area
+            # Create content area with resizable panels
             self._setup_content_area()
             
             # Create status bar
@@ -314,7 +347,8 @@ class ReviewGUI:
         title_label = ttk.Label(
             header_frame, 
             text="Multi-Vision Toolkit", 
-            style="Header.TLabel"
+            style="Header.TLabel",
+            font=("Segoe UI", 16, "bold")
         )
         title_label.pack(side=tk.LEFT, padx=10)
         
@@ -345,64 +379,90 @@ class ReviewGUI:
         self.theme_btn.pack(side=tk.LEFT, padx=10)
     
     def _setup_content_area(self):
-        """Setup the main content area with image viewer and caption"""
-        content_frame = ttk.Frame(self.main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        """Setup the main content area with resizable panels"""
+        # Create a PanedWindow for resizable panels
+        self.paned_window = ttk.PanedWindow(self.main_frame, orient=tk.VERTICAL)
+        self.paned_window.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Image display area
-        image_frame = ttk.Frame(content_frame)
-        image_frame.pack(fill=tk.BOTH, expand=True)
+        image_frame = ttk.Frame(self.paned_window)
         
-        self.img_label = ttk.Label(image_frame)
-        self.img_label.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        # Image container for centering
+        self.image_container = ttk.Frame(image_frame)
+        self.image_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Caption area using Text widget for better control
-        caption_frame = ttk.Frame(content_frame)
-        caption_frame.pack(fill=tk.X, padx=10, pady=10)
+        self.img_label = ttk.Label(self.image_container)
+        self.img_label.pack(fill=tk.BOTH, expand=True)
         
-        caption_title = ttk.Label(caption_frame, text="Image Analysis", style="Header.TLabel")
-        caption_title.pack(anchor=tk.W, pady=(0, 5))
+        # Analysis area
+        analysis_frame = ttk.Frame(self.paned_window)
         
+        # Add frames to paned window
+        self.paned_window.add(image_frame, weight=3)  # 75% of space
+        self.paned_window.add(analysis_frame, weight=1)  # 25% of space
+        
+        # Analysis header
+        ttk.Label(
+            analysis_frame, 
+            text="Image Analysis", 
+            style="Header.TLabel",
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor=tk.W, padx=5, pady=5)
+        
+        # Caption frame
+        caption_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
+        caption_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Caption text widget
         self.caption_text = tk.Text(
             caption_frame, 
             wrap=tk.WORD, 
             height=5, 
             font=("Segoe UI", 10),
             padx=10,
-            pady=10
+            pady=10,
+            relief=tk.FLAT,
+            borderwidth=0
         )
-        self.caption_text.pack(fill=tk.X)
+        self.caption_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
         # Make read-only initially
         self.caption_text.config(state=tk.DISABLED)
         
-        # Metadata display
-        metadata_frame = ttk.Frame(caption_frame)
-        metadata_frame.pack(fill=tk.X, pady=5)
+        # Metadata frame
+        metadata_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
+        metadata_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        # File info (left side)
-        file_info_frame = ttk.Frame(metadata_frame)
-        file_info_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        # File info grid
+        info_grid = ttk.Frame(metadata_frame)
+        info_grid.pack(fill=tk.X, padx=10, pady=10)
         
-        ttk.Label(file_info_frame, text="Filename:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
-        self.filename_label = ttk.Label(file_info_frame, text="")
+        # Filename
+        ttk.Label(info_grid, text="Filename:", width=12, anchor=tk.E).grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.filename_label = ttk.Label(info_grid, text="")
         self.filename_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
         
-        ttk.Label(file_info_frame, text="Dimensions:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
-        self.dimensions_label = ttk.Label(file_info_frame, text="")
+        # Dimensions
+        ttk.Label(info_grid, text="Dimensions:", width=12, anchor=tk.E).grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.dimensions_label = ttk.Label(info_grid, text="")
         self.dimensions_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
         
-        # Controls (bottom)
-        controls_frame = ttk.Frame(content_frame)
-        controls_frame.pack(fill=tk.X, padx=10, pady=10)
+        # Model info
+        ttk.Label(info_grid, text="Model:", width=12, anchor=tk.E).grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        self.model_label = ttk.Label(info_grid, text=self.model_name)
+        self.model_label.grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
         
-        # Action buttons (left side)
+        # Control buttons
+        controls_frame = ttk.Frame(analysis_frame)
+        controls_frame.pack(fill=tk.X, padx=5, pady=10)
+        
+        # Action buttons
         action_frame = ttk.Frame(controls_frame)
-        action_frame.pack(side=tk.LEFT)
+        action_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
         
         self.approve_btn = ttk.Button(
-            action_frame, 
-            text="✓ Approve (A)", 
+            action_frame,
+            text="✓ Approve (A)",
             command=self.approve,
             style="Primary.TButton",
             width=15
@@ -410,28 +470,29 @@ class ReviewGUI:
         self.approve_btn.pack(side=tk.LEFT, padx=5)
         
         self.reject_btn = ttk.Button(
-            action_frame, 
-            text="✗ Reject (R)", 
+            action_frame,
+            text="✗ Reject (R)",
             command=self.reject,
+            style="Reject.TButton",
             width=15
         )
         self.reject_btn.pack(side=tk.LEFT, padx=5)
         
-        # Navigation buttons (right side)
+        # Navigation buttons
         nav_frame = ttk.Frame(controls_frame)
-        nav_frame.pack(side=tk.RIGHT)
+        nav_frame.pack(side=tk.RIGHT, padx=5)
         
         self.prev_btn = ttk.Button(
-            nav_frame, 
-            text="◀ Previous", 
+            nav_frame,
+            text="◀ Previous",
             command=self._prev_image,
             width=12
         )
         self.prev_btn.pack(side=tk.LEFT, padx=5)
         
         self.next_btn = ttk.Button(
-            nav_frame, 
-            text="Next ▶", 
+            nav_frame,
+            text="Next ▶",
             command=self._next_image,
             width=12
         )
@@ -473,7 +534,12 @@ class ReviewGUI:
         """Toggle between light and dark theme"""
         new_theme = self.theme_manager.toggle_theme()
         theme_icon = "🌙" if new_theme == "light" else "☀️"
-        self.theme_btn.config(text=f"{theme_icon} Theme")
+        
+        # Update theme button
+        if hasattr(self, 'theme_btn'):
+            self.theme_btn.config(text=f"{theme_icon} Theme")
+        
+        # Update status
         self.status_label.config(text=f"Theme changed to {new_theme}")
     
     def _toggle_fullscreen(self):
@@ -572,6 +638,40 @@ class ReviewGUI:
             self.status_label.config(text=f"Error loading images: {str(e)}")
             raise
 
+    def apply_text_highlighting(self, text_widget, content):
+        """Apply syntax highlighting to text content"""
+        text_widget.delete(1.0, tk.END)
+        
+        # First insert all content
+        text_widget.insert(tk.END, content)
+        
+        # Apply highlighting for patterns
+        self._highlight_pattern(text_widget, r"Description:", "heading")
+        self._highlight_pattern(text_widget, r"Detected objects:", "subheading")
+        self._highlight_pattern(text_widget, r"Keywords:", "subheading")
+        self._highlight_pattern(text_widget, r"\b(person|people|man|woman|child|dog|cat|car|building)\b", "object")
+        self._highlight_pattern(text_widget, r"\b([a-zA-Z0-9]+:[a-zA-Z0-9_]+)\b", "tag")  # Match patterns like "object:person"
+    
+    def _highlight_pattern(self, text_widget, pattern, tag, start="1.0", end="end"):
+        """Apply a tag to all text that matches the pattern"""
+        start = text_widget.index(start)
+        end = text_widget.index(end)
+        text_widget.mark_set("matchStart", start)
+        text_widget.mark_set("matchEnd", start)
+        text_widget.mark_set("searchLimit", end)
+
+        count = tk.IntVar()
+        while True:
+            index = text_widget.search(
+                pattern, "matchEnd", "searchLimit",
+                count=count, regexp=True
+            )
+            if index == "" or count.get() == 0:
+                break
+            text_widget.mark_set("matchStart", index)
+            text_widget.mark_set("matchEnd", f"{index}+{count.get()}c")
+            text_widget.tag_add(tag, "matchStart", "matchEnd")
+
     def show_current(self):
         """Display current image with error handling"""
         if not self.items:
@@ -609,17 +709,34 @@ class ReviewGUI:
             img_width, img_height = img.size
             self.dimensions_label.config(text=f"{img_width} × {img_height}")
             
-            # Create a thumbnail
-            max_size = (800, 600)
-            img.thumbnail(max_size)
+            # Calculate display size to maintain aspect ratio and center
+            max_width, max_height = 800, 600
+            
+            # Scale down if needed, maintaining aspect ratio
+            scale_w = max_width / img_width if img_width > max_width else 1
+            scale_h = max_height / img_height if img_height > max_height else 1
+            scale = min(scale_w, scale_h)
+            
+            if scale < 1:
+                new_width, new_height = int(img_width * scale), int(img_height * scale)
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+            
+            # Convert to PhotoImage
             photo = ImageTk.PhotoImage(img)
+            
+            # Update the image label
             self.img_label.configure(image=photo)
             self.img_label.image = photo  # Keep a reference
             
-            # Update caption
+            # Center the image in the container
+            self.img_label.place(
+                relx=0.5, rely=0.5,
+                anchor='center'
+            )
+            
+            # Update caption with styled text and highlighting
             self.caption_text.config(state=tk.NORMAL)
-            self.caption_text.delete(1.0, tk.END)
-            self.caption_text.insert(tk.END, description)
+            self.apply_text_highlighting(self.caption_text, description)
             self.caption_text.config(state=tk.DISABLED)
             
             # Save analysis results
