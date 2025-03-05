@@ -12,9 +12,6 @@ from typing import Optional, List, Tuple, Dict
 from dataclasses import dataclass
 import torch
 
-from models.florence_model import Florence2Model
-from models.janus_model import JanusModel
-
 # Configure logging with both file and console handlers
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +22,44 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def load_environment_from_dotenv():
+    """Load environment variables from .env file if available"""
+    try:
+        env_path = Path('.env')
+        if env_path.exists():
+            logger.info(f"Loading environment from .env file: {env_path}")
+            with open(env_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    key, value = line.split('=', 1)
+                    os.environ[key] = value
+            logger.info("Successfully loaded environment variables from .env file")
+            return True
+        return False
+    except Exception as e:
+        logger.warning(f"Error loading .env file: {str(e)}")
+        return False
+
+# Load HF token from environment at module level
+load_environment_from_dotenv()
+if "HF_TOKEN" in os.environ:
+    logger.info("HuggingFace token found in environment variables")
+    os.environ["HUGGINGFACE_HUB_TOKEN"] = os.environ["HF_TOKEN"]
+    try:
+        # Try to set HF_HUB_TOKEN as well, which is sometimes used
+        os.environ["HF_HUB_TOKEN"] = os.environ["HF_TOKEN"]
+    except:
+        pass
+
+# Only import Florence and Janus models after setting up environment
+try:
+    from models.florence_model import Florence2Model
+    from models.janus_model import JanusModel
+except Exception as e:
+    logger.error(f"Error importing models: {str(e)}")
 
 @dataclass
 class ImageAnalysisResult:
@@ -358,7 +393,23 @@ def main():
         app.root.mainloop()
     except Exception as e:
         logger.error(f"Application error: {str(e)}")
-        raise
+        print(f"Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        logger.error(f"Unhandled application error: {str(e)}")
+        print(f"Error: {e}")
+        
+        # If running in GUI mode, show error dialog
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            if tk._default_root is not None:
+                messagebox.showerror(
+                    "Application Error",
+                    f"An unexpected error occurred:\n\n{str(e)}\n\nCheck log file for details."
+                )
+        except:
+            pass
