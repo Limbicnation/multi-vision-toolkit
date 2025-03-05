@@ -11,4 +11,4 @@ accelerate>=0.25.0
 safetensors>=0.4.0
 tensorboard>=2.15.0 
 numpy>=1.24.0      
-tqdm>=4.66.0        s
+tqdm>=4.66.0
