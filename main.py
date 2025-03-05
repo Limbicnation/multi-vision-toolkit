@@ -8,9 +8,10 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import shutil
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict
+from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
 import torch
+import re
 
 # Configure logging with both file and console handlers
 logging.basicConfig(
@@ -22,6 +23,25 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Theme constants
+DARK_BG = "#1e1e1e"
+DARK_FG = "#ffffff"
+DARK_ACCENT = "#007acc"
+DARK_SECONDARY = "#2d2d2d"
+DARK_BUTTON = "#3c3c3c"
+DARK_BUTTON_ACTIVE = "#505050"
+DARK_APPROVE_BTN = "#2d9440"
+DARK_REJECT_BTN = "#9e3a3a"
+
+LIGHT_BG = "#f0f0f0"
+LIGHT_FG = "#000000"
+LIGHT_ACCENT = "#0078d7"
+LIGHT_SECONDARY = "#e0e0e0"
+LIGHT_BUTTON = "#dddddd"
+LIGHT_BUTTON_ACTIVE = "#cccccc"
+LIGHT_APPROVE_BTN = "#2ecc71"
+LIGHT_REJECT_BTN = "#e74c3c"
 
 def load_environment_from_dotenv():
     """Load environment variables from .env file if available"""
@@ -66,6 +86,125 @@ class ImageAnalysisResult:
     """Data class to store image analysis results"""
     description: str
     clean_caption: Optional[str] = None
+
+class ThemeManager:
+    """Manages application themes (light/dark mode)"""
+    
+    def __init__(self, root):
+        self.root = root
+        self.theme = "light"  # Default theme
+        self.load_theme_preference()
+        
+    def toggle_theme(self):
+        """Toggle between light and dark themes"""
+        self.theme = "dark" if self.theme == "light" else "light"
+        self.apply_theme()
+        self.save_theme_preference()
+        return self.theme
+        
+    def apply_theme(self):
+        """Apply the current theme to the application"""
+        style = ttk.Style()
+        
+        if self.theme == "dark":
+            # Configure dark mode
+            self.root.configure(bg=DARK_BG)
+            style.configure("TFrame", background=DARK_BG)
+            style.configure("TLabel", background=DARK_BG, foreground=DARK_FG)
+            style.configure("TButton", foreground=DARK_FG)
+            style.map("TButton", background=[("active", DARK_BUTTON_ACTIVE)])
+            style.configure("TCombobox", fieldbackground=DARK_SECONDARY, foreground=DARK_FG)
+            style.map("TCombobox", fieldbackground=[("readonly", DARK_SECONDARY)])
+            style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground=DARK_ACCENT, background=DARK_BG)
+            style.configure("Caption.TLabel", foreground=DARK_FG, padding=10, background=DARK_SECONDARY)
+            style.configure("Primary.TButton", foreground=DARK_FG)
+            style.map("Primary.TButton", background=[("active", DARK_APPROVE_BTN)])
+            style.configure("Reject.TButton", foreground=DARK_FG)
+            style.map("Reject.TButton", background=[("active", DARK_REJECT_BTN)])
+            style.configure("StatusBar.TFrame", background=DARK_SECONDARY)
+            style.configure("StatusBar.TLabel", background=DARK_SECONDARY, foreground=DARK_FG)
+            style.configure("TPanedwindow", background=DARK_BG)
+            style.configure("TNotebook", background=DARK_BG)
+            style.configure("TNotebook.Tab", background=DARK_SECONDARY, foreground=DARK_FG, padding=[10, 2])
+            style.map("TNotebook.Tab", background=[("selected", DARK_ACCENT)], foreground=[("selected", DARK_FG)])
+            style.configure("InfoFrame.TFrame", background=DARK_SECONDARY)
+            
+            # Set text widgets
+            for text_widget in self._find_text_widgets(self.root):
+                text_widget.config(bg=DARK_SECONDARY, fg=DARK_FG, insertbackground=DARK_FG)
+                
+                # Configure text tags
+                text_widget.tag_configure("heading", foreground=DARK_ACCENT, font=("Segoe UI", 11, "bold"))
+                text_widget.tag_configure("subheading", foreground="#00aaff", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("important", foreground="#ffaa00", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("object", foreground="#00ccaa", font=("Segoe UI", 10))
+                text_widget.tag_configure("tag", foreground="#cc88ff", font=("Segoe UI", 10))
+        else:
+            # Configure light mode
+            self.root.configure(bg=LIGHT_BG)
+            style.configure("TFrame", background=LIGHT_BG)
+            style.configure("TLabel", background=LIGHT_BG, foreground=LIGHT_FG)
+            style.configure("TButton", foreground=LIGHT_FG)
+            style.map("TButton", background=[("active", LIGHT_BUTTON_ACTIVE)])
+            style.configure("TCombobox", fieldbackground="white", foreground=LIGHT_FG)
+            style.map("TCombobox", fieldbackground=[("readonly", "white")])
+            style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"), foreground=LIGHT_ACCENT, background=LIGHT_BG)
+            style.configure("Caption.TLabel", foreground=LIGHT_FG, padding=10, background=LIGHT_SECONDARY)
+            style.configure("Primary.TButton", foreground="white")
+            style.map("Primary.TButton", background=[("active", LIGHT_APPROVE_BTN)])
+            style.configure("Reject.TButton", foreground="white")
+            style.map("Reject.TButton", background=[("active", LIGHT_REJECT_BTN)])
+            style.configure("StatusBar.TFrame", background=LIGHT_SECONDARY)
+            style.configure("StatusBar.TLabel", background=LIGHT_SECONDARY, foreground=LIGHT_FG)
+            style.configure("TPanedwindow", background=LIGHT_BG)
+            style.configure("TNotebook", background=LIGHT_BG)
+            style.configure("TNotebook.Tab", background=LIGHT_SECONDARY, foreground=LIGHT_FG, padding=[10, 2])
+            style.map("TNotebook.Tab", background=[("selected", LIGHT_ACCENT)], foreground=[("selected", "white")])
+            style.configure("InfoFrame.TFrame", background=LIGHT_SECONDARY)
+            
+            # Set text widgets
+            for text_widget in self._find_text_widgets(self.root):
+                text_widget.config(bg="white", fg=LIGHT_FG, insertbackground=LIGHT_FG)
+                
+                # Configure text tags
+                text_widget.tag_configure("heading", foreground=LIGHT_ACCENT, font=("Segoe UI", 11, "bold"))
+                text_widget.tag_configure("subheading", foreground="#0066cc", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("important", foreground="#cc6600", font=("Segoe UI", 10, "bold"))
+                text_widget.tag_configure("object", foreground="#008866", font=("Segoe UI", 10))
+                text_widget.tag_configure("tag", foreground="#8844cc", font=("Segoe UI", 10))
+    
+    def _find_text_widgets(self, parent):
+        """Find all Text widgets in the widget hierarchy"""
+        result = []
+        for widget in parent.winfo_children():
+            if isinstance(widget, tk.Text):
+                result.append(widget)
+            result.extend(self._find_text_widgets(widget))
+        return result
+        
+    def save_theme_preference(self):
+        """Save theme preference to a settings file"""
+        try:
+            # Create settings directory if it doesn't exist
+            settings_dir = Path("settings")
+            settings_dir.mkdir(exist_ok=True)
+            
+            # Save the theme preference
+            with open(settings_dir / "theme.json", "w") as f:
+                json.dump({"theme": self.theme}, f)
+        except Exception as e:
+            logger.warning(f"Failed to save theme preference: {e}")
+            
+    def load_theme_preference(self):
+        """Load theme preference from settings file"""
+        try:
+            theme_file = Path("settings/theme.json")
+            if theme_file.exists():
+                with open(theme_file, "r") as f:
+                    data = json.load(f)
+                    self.theme = data.get("theme", "light")
+        except Exception as e:
+            logger.warning(f"Failed to load theme preference: {e}")
 
 class ModelManager:
     """Manages model initialization and switching"""
@@ -163,68 +302,270 @@ class ReviewGUI:
             logger.info(f"Created/verified directory: {dir_path}")
         
         self.root = tk.Tk()
-        self.root.title("AI Training Dataset Preparation Tool")
-        self.root.geometry("1200x800")
+        self.root.title("Multi-Vision Toolkit")
+        self.root.geometry("1280x800")
+        self.root.minsize(1024, 768)
+        
+        # Initialize theme manager
+        self.theme_manager = ThemeManager(self.root)
         
         self.setup_gui()
         self.load_items()
+        
+        # Apply theme after GUI is set up
+        self.theme_manager.apply_theme()
 
     def setup_gui(self):
         """Setup GUI components with error handling"""
         try:
-            frame = ttk.Frame(self.root, padding="10")
-            frame.grid(row=0, column=0, sticky="nsew")
+            # Create main container
+            self.main_frame = ttk.Frame(self.root)
+            self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             
-            self.root.columnconfigure(0, weight=1)
-            self.root.rowconfigure(0, weight=1)
-            frame.columnconfigure(0, weight=1)
+            # Create header
+            self._setup_header()
             
-            # Model selection
-            model_frame = ttk.Frame(frame)
-            model_frame.grid(row=0, column=0, pady=5)
+            # Create content area with resizable panels
+            self._setup_content_area()
             
-            ttk.Label(model_frame, text="Model:").pack(side=tk.LEFT, padx=5)
-            self.model_var = tk.StringVar(value=self.model_name)
-            model_combo = ttk.Combobox(
-                model_frame, 
-                textvariable=self.model_var,
-                values=["florence2", "janus"],
-                state="readonly"
-            )
-            model_combo.pack(side=tk.LEFT, padx=5)
-            model_combo.bind('<<ComboboxSelected>>', self._on_model_change)
+            # Create status bar
+            self._setup_status_bar()
             
-            # Image display
-            self.img_label = ttk.Label(frame)
-            self.img_label.grid(row=1, column=0, pady=10)
-            
-            # Caption display
-            self.caption = tk.StringVar()
-            caption_label = ttk.Label(
-                frame, 
-                textvariable=self.caption, 
-                wraplength=800,
-                justify=tk.LEFT
-            )
-            caption_label.grid(row=2, column=0, pady=(0, 20))
-            
-            # Control buttons
-            btn_frame = ttk.Frame(frame)
-            btn_frame.grid(row=3, column=0, pady=10)
-            
-            approve_btn = ttk.Button(btn_frame, text="Approve (A)", command=self.approve)
-            approve_btn.pack(side=tk.LEFT, padx=5)
-            
-            reject_btn = ttk.Button(btn_frame, text="Reject (R)", command=self.reject)
-            reject_btn.pack(side=tk.LEFT, padx=5)
-            
-            # Keyboard shortcuts
-            self.root.bind('a', lambda e: self.approve())
-            self.root.bind('r', lambda e: self.reject())
+            # Setup keyboard shortcuts
+            self._setup_keyboard_shortcuts()
             
         except Exception as e:
             logger.error(f"Error setting up GUI: {str(e)}")
             raise
+    
+    def _setup_header(self):
+        """Setup header with app title, model selector and theme toggle"""
+        header_frame = ttk.Frame(self.main_frame)
+        header_frame.pack(fill=tk.X, pady=10)
+        
+        # App title
+        title_label = ttk.Label(
+            header_frame, 
+            text="Multi-Vision Toolkit", 
+            style="Header.TLabel",
+            font=("Segoe UI", 16, "bold")
+        )
+        title_label.pack(side=tk.LEFT, padx=10)
+        
+        # Controls on the right
+        controls_frame = ttk.Frame(header_frame)
+        controls_frame.pack(side=tk.RIGHT)
+        
+        # Model selection
+        ttk.Label(controls_frame, text="Model:").pack(side=tk.LEFT, padx=5)
+        self.model_var = tk.StringVar(value=self.model_name)
+        model_combo = ttk.Combobox(
+            controls_frame, 
+            textvariable=self.model_var,
+            values=["florence2", "janus"],
+            state="readonly",
+            width=10
+        )
+        model_combo.pack(side=tk.LEFT, padx=5)
+        model_combo.bind('<<ComboboxSelected>>', self._on_model_change)
+        
+        # Theme toggle
+        theme_icon = "🌙" if self.theme_manager.theme == "light" else "☀️"
+        self.theme_btn = ttk.Button(
+            controls_frame,
+            text=f"{theme_icon} Theme",
+            command=self._toggle_theme
+        )
+        self.theme_btn.pack(side=tk.LEFT, padx=10)
+    
+    def _setup_content_area(self):
+        """Setup the main content area with resizable panels"""
+        # Create a PanedWindow for resizable panels
+        self.paned_window = ttk.PanedWindow(self.main_frame, orient=tk.VERTICAL)
+        self.paned_window.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Image display area
+        image_frame = ttk.Frame(self.paned_window)
+        
+        # Image container for centering
+        self.image_container = ttk.Frame(image_frame)
+        self.image_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.img_label = ttk.Label(self.image_container)
+        self.img_label.pack(fill=tk.BOTH, expand=True)
+        
+        # Analysis area
+        analysis_frame = ttk.Frame(self.paned_window)
+        
+        # Add frames to paned window
+        self.paned_window.add(image_frame, weight=3)  # 75% of space
+        self.paned_window.add(analysis_frame, weight=1)  # 25% of space
+        
+        # Analysis header
+        ttk.Label(
+            analysis_frame, 
+            text="Image Analysis", 
+            style="Header.TLabel",
+            font=("Segoe UI", 12, "bold")
+        ).pack(anchor=tk.W, padx=5, pady=5)
+        
+        # Caption frame
+        caption_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
+        caption_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Caption text widget
+        self.caption_text = tk.Text(
+            caption_frame, 
+            wrap=tk.WORD, 
+            height=5, 
+            font=("Segoe UI", 10),
+            padx=10,
+            pady=10,
+            relief=tk.FLAT,
+            borderwidth=0
+        )
+        self.caption_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Make read-only initially
+        self.caption_text.config(state=tk.DISABLED)
+        
+        # Metadata frame
+        metadata_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
+        metadata_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # File info grid
+        info_grid = ttk.Frame(metadata_frame)
+        info_grid.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Filename
+        ttk.Label(info_grid, text="Filename:", width=12, anchor=tk.E).grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
+        self.filename_label = ttk.Label(info_grid, text="")
+        self.filename_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Dimensions
+        ttk.Label(info_grid, text="Dimensions:", width=12, anchor=tk.E).grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
+        self.dimensions_label = ttk.Label(info_grid, text="")
+        self.dimensions_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Model info
+        ttk.Label(info_grid, text="Model:", width=12, anchor=tk.E).grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
+        self.model_label = ttk.Label(info_grid, text=self.model_name)
+        self.model_label.grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
+        
+        # Control buttons
+        controls_frame = ttk.Frame(analysis_frame)
+        controls_frame.pack(fill=tk.X, padx=5, pady=10)
+        
+        # Action buttons
+        action_frame = ttk.Frame(controls_frame)
+        action_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        
+        self.approve_btn = ttk.Button(
+            action_frame,
+            text="✓ Approve (A)",
+            command=self.approve,
+            style="Primary.TButton",
+            width=15
+        )
+        self.approve_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.reject_btn = ttk.Button(
+            action_frame,
+            text="✗ Reject (R)",
+            command=self.reject,
+            style="Reject.TButton",
+            width=15
+        )
+        self.reject_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Navigation buttons
+        nav_frame = ttk.Frame(controls_frame)
+        nav_frame.pack(side=tk.RIGHT, padx=5)
+        
+        self.prev_btn = ttk.Button(
+            nav_frame,
+            text="◀ Previous",
+            command=self._prev_image,
+            width=12
+        )
+        self.prev_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.next_btn = ttk.Button(
+            nav_frame,
+            text="Next ▶",
+            command=self._next_image,
+            width=12
+        )
+        self.next_btn.pack(side=tk.LEFT, padx=5)
+        
+    def _setup_status_bar(self):
+        """Setup status bar at the bottom of the window"""
+        status_frame = ttk.Frame(self.root, style="StatusBar.TFrame")
+        status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+        
+        self.status_label = ttk.Label(
+            status_frame, 
+            text="Ready", 
+            anchor=tk.W,
+            style="StatusBar.TLabel"
+        )
+        self.status_label.pack(side=tk.LEFT, fill=tk.X, padx=10, pady=3)
+        
+        # Progress counter on the right
+        self.progress_label = ttk.Label(
+            status_frame, 
+            text="0/0", 
+            anchor=tk.E,
+            style="StatusBar.TLabel"
+        )
+        self.progress_label.pack(side=tk.RIGHT, padx=10, pady=3)
+    
+    def _setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts"""
+        self.root.bind('a', lambda e: self.approve())
+        self.root.bind('r', lambda e: self.reject())
+        self.root.bind('<Left>', lambda e: self._prev_image())
+        self.root.bind('<Right>', lambda e: self._next_image())
+        self.root.bind('t', lambda e: self._toggle_theme())
+        self.root.bind('<F5>', lambda e: self.load_items())
+        self.root.bind('<F11>', lambda e: self._toggle_fullscreen())
+    
+    def _toggle_theme(self):
+        """Toggle between light and dark theme"""
+        new_theme = self.theme_manager.toggle_theme()
+        theme_icon = "🌙" if new_theme == "light" else "☀️"
+        
+        # Update theme button
+        if hasattr(self, 'theme_btn'):
+            self.theme_btn.config(text=f"{theme_icon} Theme")
+        
+        # Update status
+        self.status_label.config(text=f"Theme changed to {new_theme}")
+    
+    def _toggle_fullscreen(self):
+        """Toggle fullscreen mode"""
+        is_fullscreen = self.root.attributes('-fullscreen')
+        self.root.attributes('-fullscreen', not is_fullscreen)
+        
+    def _prev_image(self):
+        """Show the previous image"""
+        if not hasattr(self, 'items') or not self.items:
+            return
+            
+        if self.current > 0:
+            self.current -= 1
+            self.show_current()
+            self.status_label.config(text="Previous image")
+    
+    def _next_image(self):
+        """Show the next image"""
+        if not hasattr(self, 'items') or not self.items:
+            return
+            
+        if self.current < len(self.items) - 1:
+            self.current += 1
+            self.show_current()
+            self.status_label.config(text="Next image")
 
     def _on_model_change(self, event):
         """Handle model switching with error handling"""
@@ -232,15 +573,18 @@ class ReviewGUI:
             new_model = self.model_var.get()
             if new_model != self.model_name:
                 logger.info(f"Switching model from {self.model_name} to {new_model}")
+                self.status_label.config(text=f"Switching to {new_model} model...")
                 try:
                     self.model = self.model_manager.get_model(new_model)
                     self.model_name = new_model
                     if self.items:
                         self.show_current()
+                    self.status_label.config(text=f"Switched to {new_model} model")
                 except Exception as e:
                     logger.error(f"Failed to switch to model {new_model}: {str(e)}")
                     messagebox.showerror("Error", f"Failed to switch to {new_model}. Reverting to previous model.")
                     self.model_var.set(self.model_name)
+                    self.status_label.config(text=f"Error switching model")
         except Exception as e:
             logger.error(f"Error in model change handler: {str(e)}")
             raise
@@ -249,8 +593,11 @@ class ReviewGUI:
         """Load image items with error handling"""
         self.items = []
         try:
+            self.status_label.config(text="Loading images...")
+            
             if not self.review_dir.exists():
                 logger.warning(f"Review directory not found: {self.review_dir}")
+                self.status_label.config(text=f"Review directory not found: {self.review_dir}")
                 return
                 
             for f in self.review_dir.iterdir():
@@ -268,14 +615,62 @@ class ReviewGUI:
                     self.items.append((base_name, json_path, img_path))
             
             self.current = 0
+            self.progress_label.config(text=f"0/{len(self.items)}")
+            
             if self.items:
                 self.show_current()
+                self.status_label.config(text=f"Loaded {len(self.items)} images")
             else:
                 logger.info("No supported image files found for review.")
                 messagebox.showinfo("Info", "No images found for review.")
+                self.status_label.config(text="No images found for review")
+                
+                # Clear the display
+                self.img_label.config(image="")
+                self.caption_text.config(state=tk.NORMAL)
+                self.caption_text.delete(1.0, tk.END)
+                self.caption_text.insert(tk.END, "No images available for review.")
+                self.caption_text.config(state=tk.DISABLED)
+                self.filename_label.config(text="")
+                self.dimensions_label.config(text="")
         except Exception as e:
             logger.error(f"Error loading items: {str(e)}")
+            self.status_label.config(text=f"Error loading images: {str(e)}")
             raise
+
+    def apply_text_highlighting(self, text_widget, content):
+        """Apply syntax highlighting to text content"""
+        text_widget.delete(1.0, tk.END)
+        
+        # First insert all content
+        text_widget.insert(tk.END, content)
+        
+        # Apply highlighting for patterns
+        self._highlight_pattern(text_widget, r"Description:", "heading")
+        self._highlight_pattern(text_widget, r"Detected objects:", "subheading")
+        self._highlight_pattern(text_widget, r"Keywords:", "subheading")
+        self._highlight_pattern(text_widget, r"\b(person|people|man|woman|child|dog|cat|car|building)\b", "object")
+        self._highlight_pattern(text_widget, r"\b([a-zA-Z0-9]+:[a-zA-Z0-9_]+)\b", "tag")  # Match patterns like "object:person"
+    
+    def _highlight_pattern(self, text_widget, pattern, tag, start="1.0", end="end"):
+        """Apply a tag to all text that matches the pattern"""
+        start = text_widget.index(start)
+        end = text_widget.index(end)
+        text_widget.mark_set("matchStart", start)
+        text_widget.mark_set("matchEnd", start)
+        text_widget.mark_set("searchLimit", end)
+
+        count = tk.IntVar()
+        while True:
+            index = text_widget.search(
+                pattern, "matchEnd", "searchLimit",
+                count=count, regexp=True
+            )
+            if index == "" or count.get() == 0:
+                break
+            text_widget.mark_set("matchStart", index)
+            text_widget.mark_set("matchEnd", f"{index}+{count.get()}c")
+            text_widget.tag_add(tag, "matchStart", "matchEnd")
 
     def show_current(self):
         """Display current image with error handling"""
@@ -283,14 +678,25 @@ class ReviewGUI:
             return
             
         try:
-            _, json_path, img_path = self.items[self.current]
+            self.status_label.config(text="Loading image...")
+            base_name, json_path, img_path = self.items[self.current]
+            
+            # Update progress
+            self.progress_label.config(text=f"{self.current + 1}/{len(self.items)}")
+            
+            # Update filename
+            self.filename_label.config(text=str(img_path.name))
             
             try:
+                # Analyze the image
+                self.status_label.config(text="Analyzing image...")
                 description, clean_caption = self.model.analyze_image(str(img_path))
+                self.status_label.config(text="Analysis complete")
             except Exception as e:
                 logger.error(f"Error analyzing image: {str(e)}")
                 description = "Error analyzing image"
                 clean_caption = None
+                self.status_label.config(text=f"Error analyzing image")
                 messagebox.showwarning("Warning", f"Error analyzing image: {str(e)}")
             
             if self.trigger_word and clean_caption:
@@ -298,10 +704,40 @@ class ReviewGUI:
             
             # Load and display image
             img = Image.open(img_path)
-            img.thumbnail((800, 600))
+            
+            # Get dimensions
+            img_width, img_height = img.size
+            self.dimensions_label.config(text=f"{img_width} × {img_height}")
+            
+            # Calculate display size to maintain aspect ratio and center
+            max_width, max_height = 800, 600
+            
+            # Scale down if needed, maintaining aspect ratio
+            scale_w = max_width / img_width if img_width > max_width else 1
+            scale_h = max_height / img_height if img_height > max_height else 1
+            scale = min(scale_w, scale_h)
+            
+            if scale < 1:
+                new_width, new_height = int(img_width * scale), int(img_height * scale)
+                img = img.resize((new_width, new_height), Image.LANCZOS)
+            
+            # Convert to PhotoImage
             photo = ImageTk.PhotoImage(img)
+            
+            # Update the image label
             self.img_label.configure(image=photo)
-            self.img_label.image = photo
+            self.img_label.image = photo  # Keep a reference
+            
+            # Center the image in the container
+            self.img_label.place(
+                relx=0.5, rely=0.5,
+                anchor='center'
+            )
+            
+            # Update caption with styled text and highlighting
+            self.caption_text.config(state=tk.NORMAL)
+            self.apply_text_highlighting(self.caption_text, description)
+            self.caption_text.config(state=tk.DISABLED)
             
             # Save analysis results
             data = {"results": {"caption": description}}
@@ -310,10 +746,15 @@ class ReviewGUI:
             if clean_caption:
                 self.dataset_prep.create_caption_file(str(img_path), clean_caption)
             
-            self.caption.set(f"Analysis:\n{description}")
-            self.root.title(f"Review {self.current + 1}/{len(self.items)}")
+            # Update window title
+            self.root.title(f"Multi-Vision Toolkit - {img_path.name} ({self.current + 1}/{len(self.items)})")
+            
+            # Update status
+            self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
+            
         except Exception as e:
             logger.error(f"Error showing current item: {str(e)}")
+            self.status_label.config(text=f"Error displaying image: {str(e)}")
             raise
 
     def move_item(self, dest_dir: Path):
@@ -322,6 +763,9 @@ class ReviewGUI:
             return
             
         try:
+            action = "Approving" if dest_dir == self.approved_dir else "Rejecting"
+            self.status_label.config(text=f"{action} image...")
+            
             base_name, json_path, img_path = self.items[self.current]
             
             new_img_path = dest_dir / img_path.name
@@ -342,14 +786,22 @@ class ReviewGUI:
                 json_path.unlink()
                 
             self.items.pop(self.current)
+            
+            # Update progress counter
+            self.progress_label.config(text=f"{min(self.current + 1, len(self.items))}/{len(self.items)}")
+            
             if self.items:
                 if self.current >= len(self.items):
-                    self.current = 0
+                    self.current = len(self.items) - 1
                 self.show_current()
+                self.status_label.config(text=f"Image {action.lower()} successfully")
             else:
+                self.status_label.config(text="All images processed")
+                messagebox.showinfo("Complete", "All images have been processed.")
                 self.root.quit()
         except Exception as e:
             logger.error(f"Error moving files: {str(e)}")
+            self.status_label.config(text=f"Error {action.lower()} image: {str(e)}")
             raise
 
     def approve(self):
