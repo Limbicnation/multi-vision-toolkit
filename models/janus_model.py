@@ -50,12 +50,13 @@ class JanusModel(BaseVisionModel):
             logger.error(f"Failed to initialize model: {str(e)}")
             raise
 
-    def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
+    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
         """
         Analyze an image using the BLIP model.
         
         Args:
             image_path (str): Path to the image file
+            quality (str): Quality level - "standard", "detailed", or "creative"
             
         Returns:
             Tuple[str, Optional[str]]: (description, clean_caption)
@@ -83,16 +84,38 @@ class JanusModel(BaseVisionModel):
                     return_tensors="pt"
                 ).to(self.device)
                 
+                # Set generation parameters based on quality
+                if quality == "detailed":
+                    max_length = 75
+                    num_beams = 7
+                    temperature = 0.65
+                    top_p = 0.95
+                    length_penalty = 1.2
+                elif quality == "creative":
+                    max_length = 75
+                    num_beams = 5
+                    temperature = 1.0
+                    top_p = 0.95
+                    length_penalty = 0.8
+                    do_sample = True
+                else:  # standard
+                    max_length = 50
+                    num_beams = 5
+                    temperature = 0.7
+                    top_p = 0.9
+                    length_penalty = 1.0
+                    do_sample = True
+                
                 # Generate caption
                 with torch.inference_mode():
                     generated_ids = self.model.generate(
                         pixel_values=inputs.pixel_values,
-                        max_length=50,
-                        num_beams=5,
-                        length_penalty=1.0,
-                        temperature=0.7,
-                        do_sample=True,
-                        top_p=0.9
+                        max_length=max_length,
+                        num_beams=num_beams,
+                        length_penalty=length_penalty,
+                        temperature=temperature,
+                        do_sample=do_sample,
+                        top_p=top_p
                     )
                 
                 # Decode caption

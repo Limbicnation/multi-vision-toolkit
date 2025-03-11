@@ -20,8 +20,18 @@ class BaseVisionModel(ABC):
         pass
 
     @abstractmethod
-    def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
-        pass
+    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+        """
+        Analyze an image using the model.
+        
+        Args:
+            image_path (str): Path to the image file
+            quality (str): Quality level - "standard", "detailed", or "creative"
+            
+        Returns:
+            Tuple[str, Optional[str]]: (description, clean_caption)
+        """
+        raise NotImplementedError("Subclasses must implement analyze_image")
 
     def clean_output(self, text: str) -> str:
         """Clean model output by removing special tokens and formatting."""

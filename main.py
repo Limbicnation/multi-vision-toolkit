@@ -270,6 +270,27 @@ class DatasetPreparator:
 
 class ReviewGUI:
     """Main GUI application for reviewing images"""
+
+    def _update_caption_files(self, img_path, description, clean_caption):
+        """Update JSON and TXT files with new caption"""
+        try:
+            # Get base name and JSON path
+            base_name = img_path.stem
+            json_path = img_path.parent / f"{base_name}_for_review.json"
+            
+            # Update JSON file
+            data = {"results": {"caption": description}}
+            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+            
+            # Update TXT file
+            if clean_caption:
+                self.dataset_prep.create_caption_file(str(img_path), clean_caption)
+                
+            return True
+        except Exception as e:
+            logger.error(f"Error updating caption files: {str(e)}")
+            return False
+
     def __init__(
         self, 
         review_dir: str, 
@@ -426,8 +447,19 @@ class ReviewGUI:
         )
         self.caption_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Make read-only initially
-        self.caption_text.config(state=tk.DISABLED)
+        # Make caption text editable (instead of DISABLED)
+        self.caption_text.config(state=tk.NORMAL)
+        
+        # Add edit button to caption frame
+        edit_button_frame = ttk.Frame(caption_frame)
+        edit_button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
+        
+        self.save_caption_btn = ttk.Button(
+            edit_button_frame,
+            text="Save Edited Caption",
+            command=self._save_caption_edits
+        )
+        self.save_caption_btn.pack(side=tk.RIGHT, padx=5)
         
         # Metadata frame
         metadata_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
@@ -455,7 +487,27 @@ class ReviewGUI:
         # Control buttons
         controls_frame = ttk.Frame(analysis_frame)
         controls_frame.pack(fill=tk.X, padx=5, pady=10)
-        
+    
+        # Add toolbar frame for additional controls
+        toolbar_frame = ttk.Frame(controls_frame)
+        toolbar_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
+    
+        # Quality selection for captions
+        quality_frame = ttk.Frame(toolbar_frame)
+        quality_frame.pack(side=tk.LEFT, padx=10)
+    
+        ttk.Label(quality_frame, text="Caption Quality:").pack(side=tk.LEFT, padx=5)
+        self.quality_var = tk.StringVar(value="standard")
+        quality_combo = ttk.Combobox(
+            quality_frame, 
+            textvariable=self.quality_var,
+            values=["standard", "detailed", "creative"],
+            state="readonly",
+            width=10
+        )
+        quality_combo.pack(side=tk.LEFT, padx=5)
+        quality_combo.bind('<<ComboboxSelected>>', self._on_quality_change)
+    
         # Action buttons
         action_frame = ttk.Frame(controls_frame)
         action_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
@@ -497,7 +549,7 @@ class ReviewGUI:
             width=12
         )
         self.next_btn.pack(side=tk.LEFT, padx=5)
-        
+    
     def _setup_status_bar(self):
         """Setup status bar at the bottom of the window"""
         status_frame = ttk.Frame(self.root, style="StatusBar.TFrame")
@@ -588,6 +640,60 @@ class ReviewGUI:
         except Exception as e:
             logger.error(f"Error in model change handler: {str(e)}")
             raise
+
+    def _on_quality_change(self, event):
+        """Handle quality selection change"""
+        try:
+            new_quality = self.quality_var.get()
+            logger.info(f"Changed caption quality to: {new_quality}")
+            
+            # If there's an image loaded, offer to regenerate the caption
+            if self.items:
+                if messagebox.askyesno(
+                    "Regenerate Caption",
+                    f"Would you like to regenerate the caption with {new_quality} quality?"
+                ):
+                    self._regenerate_caption()
+        except Exception as e:
+            logger.error(f"Error in quality change handler: {str(e)}")
+
+    def _regenerate_caption(self):
+        """Regenerate caption for current image with current quality setting"""
+        if not self.items:
+            return
+            
+        try:
+            self.status_label.config(text="Regenerating caption...")
+            
+            # Get current image path
+            _, _, img_path = self.items[self.current]
+            
+            # Get current quality setting
+            quality = self.quality_var.get()
+            
+            # Analyze image with current quality
+            description, clean_caption = self.model.analyze_image(
+                str(img_path), 
+                quality=quality
+            )
+            
+            # Update display
+            self.caption_text.config(state=tk.NORMAL)
+            self.caption_text.delete(1.0, tk.END)
+            self.caption_text.insert(tk.END, description)
+            self.caption_text.config(state=tk.NORMAL)  # Keep editable
+            
+            # Apply trigger word if needed
+            if self.trigger_word and clean_caption:
+                clean_caption = f"{self.trigger_word}, {clean_caption}"
+            
+            # Update JSON and text files
+            self._update_caption_files(img_path, description, clean_caption)
+            
+            self.status_label.config(text=f"Caption regenerated with {quality} quality")
+        except Exception as e:
+            logger.error(f"Error regenerating caption: {str(e)}")
+            self.status_label.config(text="Error regenerating caption")
 
     def load_items(self):
         """Load image items with error handling"""
@@ -737,7 +843,7 @@ class ReviewGUI:
             # Update caption with styled text and highlighting
             self.caption_text.config(state=tk.NORMAL)
             self.apply_text_highlighting(self.caption_text, description)
-            self.caption_text.config(state=tk.DISABLED)
+            self.caption_text.config(state=tk.NORMAL)  # Keep editable
             
             # Save analysis results
             data = {"results": {"caption": description}}
@@ -821,6 +927,47 @@ class ReviewGUI:
         except Exception as e:
             logger.error(f"Error rejecting item: {str(e)}")
             messagebox.showerror("Error", f"Failed to reject item: {str(e)}")
+
+    def _save_caption_edits(self):
+        """Save edited captions to both JSON and TXT files"""
+        if not self.items:
+            return
+            
+        try:
+            # Get current edited text from the text widget
+            edited_text = self.caption_text.get(1.0, tk.END).strip()
+            
+            # Get paths for current item
+            base_name, json_path, img_path = self.items[self.current]
+            
+            # Extract clean caption (first line or description part)
+            if "Description:" in edited_text:
+                clean_caption = edited_text.split("Description:")[1].strip().split("\n")[0]
+            else:
+                clean_caption = edited_text.split("\n")[0]
+            
+            # Update JSON file
+            try:
+                data = json.loads(json_path.read_text(encoding='utf-8'))
+                data["results"]["caption"] = edited_text
+                json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+            except Exception as e:
+                logger.warning(f"Could not update JSON file: {str(e)}")
+            
+            # Update TXT file (clean caption)
+            caption_to_save = clean_caption
+            if self.trigger_word:
+                caption_to_save = f"{self.trigger_word}, {clean_caption}"
+                
+            txt_path = img_path.with_suffix('.txt')
+            txt_path.write_text(caption_to_save, encoding='utf-8')
+            
+            self.status_label.config(text="Caption updated successfully")
+            logger.info(f"Updated caption for {img_path.name}")
+        except Exception as e:
+            logger.error(f"Error saving caption: {str(e)}")
+            self.status_label.config(text=f"Error saving caption")
+            messagebox.showerror("Error", f"Failed to save caption: {str(e)}")
 
 def main():
     parser = argparse.ArgumentParser(description='AI Training Dataset Preparation Tool')
