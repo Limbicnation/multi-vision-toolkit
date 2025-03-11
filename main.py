@@ -487,157 +487,6 @@ class ReviewGUI:
         # Control buttons
         controls_frame = ttk.Frame(analysis_frame)
         controls_frame.pack(fill=tk.X, padx=5, pady=10)
-
-        # Add toolbar frame for additional controls
-        toolbar_frame = ttk.Frame(controls_frame)
-        toolbar_frame.pack(side=tk.TOP, fill=tk.X, pady=5)
-
-        # Quality selection for captions
-        quality_frame = ttk.Frame(toolbar_frame)
-        quality_frame.pack(side=tk.LEFT, padx=10)
-
-        ttk.Label(quality_frame, text="Caption Quality:").pack(side=tk.LEFT, padx=5)
-        self.quality_var = tk.StringVar(value="standard")
-        quality_combo = ttk.Combobox(
-            quality_frame, 
-            textvariable=self.quality_var,
-            values=["standard", "detailed", "creative"],
-            state="readonly",
-            width=10
-        )
-        quality_combo.pack(side=tk.LEFT, padx=5)
-        quality_combo.bind('<<ComboboxSelected>>', self._on_quality_change)
-
-        # Action buttons
-        action_frame = ttk.Frame(controls_frame)
-        action_frame.pack(side=tk.LEFT, fill=tk.Y, padx=5)
-        
-        self.approve_btn = ttk.Button(
-            action_frame,
-            text="✓ Approve (A)",
-            command=self.approve,
-            style="Primary.TButton",
-            width=15
-        )
-        self.approve_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.reject_btn = ttk.Button(
-            action_frame,
-            text="✗ Reject (R)",
-            command=self.reject,
-            style="Reject.TButton",
-            width=15
-        )
-        self.reject_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Navigation buttons
-        nav_frame = ttk.Frame(controls_frame)
-        nav_frame.pack(side=tk.RIGHT, padx=5)
-        
-        self.prev_btn = ttk.Button(
-            nav_frame,
-            text="◀ Previous",
-            command=self._prev_image,
-            width=12
-        )
-        self.prev_btn.pack(side=tk.LEFT, padx=5)
-        
-        self.next_btn = ttk.Button(
-            nav_frame,
-            text="Next ▶",
-            command=self._next_image,
-            width=12
-        )
-        self.next_btn.pack(side=tk.LEFT, padx=5)
-    
-    # Removed duplicate quality dropdown section that was here
-        """Setup the main content area with resizable panels"""
-        # Create a PanedWindow for resizable panels
-        self.paned_window = ttk.PanedWindow(self.main_frame, orient=tk.VERTICAL)
-        self.paned_window.pack(fill=tk.BOTH, expand=True, pady=10)
-        
-        # Image display area
-        image_frame = ttk.Frame(self.paned_window)
-        
-        # Image container for centering
-        self.image_container = ttk.Frame(image_frame)
-        self.image_container.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        
-        self.img_label = ttk.Label(self.image_container)
-        self.img_label.pack(fill=tk.BOTH, expand=True)
-        
-        # Analysis area
-        analysis_frame = ttk.Frame(self.paned_window)
-        
-        # Add frames to paned window
-        self.paned_window.add(image_frame, weight=3)  # 75% of space
-        self.paned_window.add(analysis_frame, weight=1)  # 25% of space
-        
-        # Analysis header
-        ttk.Label(
-            analysis_frame, 
-            text="Image Analysis", 
-            style="Header.TLabel",
-            font=("Segoe UI", 12, "bold")
-        ).pack(anchor=tk.W, padx=5, pady=5)
-        
-        # Caption frame
-        caption_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
-        caption_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Caption text widget
-        self.caption_text = tk.Text(
-            caption_frame, 
-            wrap=tk.WORD, 
-            height=5, 
-            font=("Segoe UI", 10),
-            padx=10,
-            pady=10,
-            relief=tk.FLAT,
-            borderwidth=0
-        )
-        self.caption_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        # Make caption text editable (instead of DISABLED)
-        self.caption_text.config(state=tk.NORMAL)
-        
-        # Add edit button to caption frame
-        edit_button_frame = ttk.Frame(caption_frame)
-        edit_button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=5)
-        
-        self.save_caption_btn = ttk.Button(
-            edit_button_frame,
-            text="Save Edited Caption",
-            command=self._save_caption_edits
-        )
-        self.save_caption_btn.pack(side=tk.RIGHT, padx=5)
-        
-        # Metadata frame
-        metadata_frame = ttk.Frame(analysis_frame, style="InfoFrame.TFrame")
-        metadata_frame.pack(fill=tk.X, padx=5, pady=5)
-        
-        # File info grid
-        info_grid = ttk.Frame(metadata_frame)
-        info_grid.pack(fill=tk.X, padx=10, pady=10)
-        
-        # Filename
-        ttk.Label(info_grid, text="Filename:", width=12, anchor=tk.E).grid(row=0, column=0, sticky=tk.W, padx=5, pady=2)
-        self.filename_label = ttk.Label(info_grid, text="")
-        self.filename_label.grid(row=0, column=1, sticky=tk.W, padx=5, pady=2)
-        
-        # Dimensions
-        ttk.Label(info_grid, text="Dimensions:", width=12, anchor=tk.E).grid(row=1, column=0, sticky=tk.W, padx=5, pady=2)
-        self.dimensions_label = ttk.Label(info_grid, text="")
-        self.dimensions_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=2)
-        
-        # Model info
-        ttk.Label(info_grid, text="Model:", width=12, anchor=tk.E).grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
-        self.model_label = ttk.Label(info_grid, text=self.model_name)
-        self.model_label.grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
-        
-        # Control buttons
-        controls_frame = ttk.Frame(analysis_frame)
-        controls_frame.pack(fill=tk.X, padx=5, pady=10)
     
         # Add toolbar frame for additional controls
         toolbar_frame = ttk.Frame(controls_frame)
@@ -655,7 +504,7 @@ class ReviewGUI:
             values=["standard", "detailed", "creative"],
             state="readonly",
             width=10
-    )
+        )
         quality_combo.pack(side=tk.LEFT, padx=5)
         quality_combo.bind('<<ComboboxSelected>>', self._on_quality_change)
     
@@ -700,22 +549,6 @@ class ReviewGUI:
             width=12
         )
         self.next_btn.pack(side=tk.LEFT, padx=5)
-        
-        # Quality selection for captions
-        quality_frame = ttk.Frame(toolbar_frame)
-        quality_frame.pack(side=tk.LEFT, padx=10)
-        
-        ttk.Label(quality_frame, text="Caption Quality:").pack(side=tk.LEFT, padx=5)
-        self.quality_var = tk.StringVar(value="standard")
-        quality_combo = ttk.Combobox(
-            quality_frame, 
-            textvariable=self.quality_var,
-            values=["standard", "detailed", "creative"],
-            state="readonly",
-            width=10
-        )
-        quality_combo.pack(side=tk.LEFT, padx=5)
-        quality_combo.bind('<<ComboboxSelected>>', self._on_quality_change)
     
     def _setup_status_bar(self):
         """Setup status bar at the bottom of the window"""
@@ -1010,7 +843,7 @@ class ReviewGUI:
             # Update caption with styled text and highlighting
             self.caption_text.config(state=tk.NORMAL)
             self.apply_text_highlighting(self.caption_text, description)
-            self.caption_text.config(state=tk.DISABLED)
+            self.caption_text.config(state=tk.NORMAL)  # Keep editable
             
             # Save analysis results
             data = {"results": {"caption": description}}
