@@ -74,10 +74,11 @@ if "HF_TOKEN" in os.environ:
     except:
         pass
 
-# Only import Florence and Janus models after setting up environment
+# Only import models after setting up environment
 try:
     from models.florence_model import Florence2Model
     from models.janus_model import JanusModel
+    from models.qwen_model import QwenModel
 except Exception as e:
     logger.error(f"Error importing models: {str(e)}")
 
@@ -234,6 +235,18 @@ class ModelManager:
                         "or install from source:\n"
                         "pip install git+https://github.com/huggingface/transformers.git")
                     raise
+            elif model_name.lower() == "qwen":
+                try:
+                    model = QwenModel()
+                except Exception as e:
+                    logger.error(f"Failed to load Qwen model: {str(e)}")
+                    messagebox.showerror("Model Error", 
+                        "Failed to load Qwen2.5-VL model. Please install requirements:\n"
+                        "pip install --upgrade transformers accelerate\n"
+                        "pip install qwen-vl-utils[decord]==0.0.8\n"
+                        "or install from source:\n"
+                        "pip install git+https://github.com/huggingface/transformers.git")
+                    raise
             else:
                 raise ValueError(f"Unsupported model: {model_name}")
             
@@ -383,7 +396,7 @@ class ReviewGUI:
         model_combo = ttk.Combobox(
             controls_frame, 
             textvariable=self.model_var,
-            values=["florence2", "janus"],
+            values=["florence2", "janus", "qwen"],
             state="readonly",
             width=10
         )
@@ -975,7 +988,7 @@ def main():
     parser.add_argument('--approved_dir', default='approved', help='Approved directory')
     parser.add_argument('--rejected_dir', default='rejected', help='Rejected directory')
     parser.add_argument('--trigger_word', help='Optional trigger word to add to captions')
-    parser.add_argument('--model', default='florence2', choices=['florence2', 'janus'],
+    parser.add_argument('--model', default='florence2', choices=['florence2', 'janus', 'qwen'],
                       help='Vision model to use (default: florence2)')
     
     try:
