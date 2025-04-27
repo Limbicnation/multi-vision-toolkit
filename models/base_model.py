@@ -10,9 +10,26 @@ logger = logging.getLogger(__name__)
 class BaseVisionModel(ABC):
     def __init__(self):
         logger.info("Initializing vision model...")
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
-        self.torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+        
+        # Check CUDA availability
+        cuda_available = torch.cuda.is_available()
+        self.device = "cuda:0" if cuda_available else "cpu"
+        
+        # Check for AMP support - default to float32 if issues with float16
+        if cuda_available:
+            try:
+                # Test tensor creation with float16
+                test_tensor = torch.zeros(1, device=self.device, dtype=torch.float16)
+                self.torch_dtype = torch.float16
+            except Exception as e:
+                logger.warning(f"Float16 support issue: {e}. Falling back to float32.")
+                self.torch_dtype = torch.float32
+        else:
+            self.torch_dtype = torch.float32
+            
         logger.info(f"Using device: {self.device} with dtype: {self.torch_dtype}")
+        
+        # Setup model
         self._setup_model()
 
     @abstractmethod

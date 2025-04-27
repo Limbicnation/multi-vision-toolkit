@@ -5,13 +5,22 @@ import logging
 from pathlib import Path
 from PIL import Image, ImageTk
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import shutil
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
 from dataclasses import dataclass
 import torch
 import re
+import csv
+
+# Try to import TkinterDnD for drag and drop support
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    HAS_DND = True
+except ImportError:
+    HAS_DND = False
+    logging.warning("TkinterDnD2 not found. Drag and drop will be disabled. Install with: pip install tkinterdnd2")
 
 # Configure logging with both file and console handlers
 logging.basicConfig(
@@ -222,36 +231,64 @@ class ModelManager:
                 return self.models[model_name]
             
             logger.info(f"Initializing new model: {model_name}")
-            if model_name.lower() == "florence2":
-                model = Florence2Model()
-            elif model_name.lower() == "janus":
-                try:
+            
+            # Try the requested model
+            try:
+                if model_name.lower() == "florence2":
+                    model = Florence2Model()
+                elif model_name.lower() == "janus":
                     model = JanusModel()
-                except Exception as e:
-                    logger.error(f"Failed to load Janus model: {str(e)}")
-                    messagebox.showerror("Model Error", 
+                elif model_name.lower() == "qwen":
+                    model = QwenModel()
+                else:
+                    raise ValueError(f"Unsupported model: {model_name}")
+                
+                self.models[model_name] = model
+                return model
+                
+            except Exception as model_error:
+                logger.error(f"Failed to load {model_name} model: {str(model_error)}")
+                
+                # Show appropriate error message based on model
+                if model_name.lower() == "florence2":
+                    error_message = (
+                        "Failed to load Florence-2 model. This might be due to PyTorch version issues.\n\n"
+                        "Please update PyTorch:\n"
+                        "pip install --upgrade torch>=2.6.0 torchvision>=0.17.0\n\n"
+                        f"Error: {str(model_error)}"
+                    )
+                elif model_name.lower() == "janus":
+                    error_message = (
                         "Failed to load Janus model. Please update transformers:\n"
                         "pip install --upgrade transformers\n"
                         "or install from source:\n"
-                        "pip install git+https://github.com/huggingface/transformers.git")
-                    raise
-            elif model_name.lower() == "qwen":
-                try:
-                    model = QwenModel()
-                except Exception as e:
-                    logger.error(f"Failed to load Qwen model: {str(e)}")
-                    messagebox.showerror("Model Error", 
+                        "pip install git+https://github.com/huggingface/transformers.git\n\n"
+                        f"Error: {str(model_error)}"
+                    )
+                elif model_name.lower() == "qwen":
+                    error_message = (
                         "Failed to load Qwen2.5-VL model. Please install requirements:\n"
                         "pip install --upgrade transformers accelerate\n"
                         "pip install qwen-vl-utils[decord]==0.0.8\n"
                         "or install from source:\n"
-                        "pip install git+https://github.com/huggingface/transformers.git")
-                    raise
-            else:
-                raise ValueError(f"Unsupported model: {model_name}")
-            
-            self.models[model_name] = model
-            return model
+                        "pip install git+https://github.com/huggingface/transformers.git\n\n"
+                        f"Error: {str(model_error)}"
+                    )
+                else:
+                    error_message = f"Unsupported model: {model_name}"
+                
+                messagebox.showerror("Model Error", error_message)
+                
+                # Ask if user wants to try another model
+                fallback_options = [m for m in ["qwen", "janus", "florence2"] if m != model_name.lower()]
+                if fallback_options:
+                    fallback_message = f"Would you like to try the {fallback_options[0]} model instead?"
+                    if messagebox.askyesno("Try Alternative Model", fallback_message):
+                        logger.info(f"Trying fallback model: {fallback_options[0]}")
+                        return self.initialize_model(fallback_options[0])
+                
+                # If no fallback or user declined, re-raise the error
+                raise
             
         except Exception as e:
             logger.error(f"Error initializing model {model_name}: {str(e)}")
@@ -267,7 +304,7 @@ class ModelManager:
 class DatasetPreparator:
     """Handles dataset preparation and file operations"""
     def __init__(self):
-        self.supported_formats = {'.jpg', '.jpeg', '.png'}
+        self.supported_formats = {'.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'}
         
     def is_supported_image(self, filename: str) -> bool:
         return Path(filename).suffix.lower() in self.supported_formats
@@ -335,7 +372,16 @@ class ReviewGUI:
             dir_path.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created/verified directory: {dir_path}")
         
-        self.root = tk.Tk()
+        # Image caching
+        self.image_cache = {}
+        self.preload_queue = []
+        
+        # Initialize TK with drag and drop support if available
+        if HAS_DND:
+            self.root = TkinterDnD.Tk()
+        else:
+            self.root = tk.Tk()
+            
         self.root.title("Multi-Vision Toolkit")
         self.root.geometry("1280x800")
         self.root.minsize(1024, 768)
@@ -427,6 +473,15 @@ class ReviewGUI:
         
         self.img_label = ttk.Label(self.image_container)
         self.img_label.pack(fill=tk.BOTH, expand=True)
+        
+        # Add drag and drop hint
+        if HAS_DND:
+            dnd_hint = ttk.Label(
+                self.image_container, 
+                text="Drag and drop images here to analyze", 
+                font=("Segoe UI", 10, "italic")
+            )
+            dnd_hint.place(relx=0.5, rely=0.95, anchor="center")
         
         # Analysis area
         analysis_frame = ttk.Frame(self.paned_window)
@@ -520,6 +575,28 @@ class ReviewGUI:
         )
         quality_combo.pack(side=tk.LEFT, padx=5)
         quality_combo.bind('<<ComboboxSelected>>', self._on_quality_change)
+        
+        # Export controls
+        export_frame = ttk.Frame(toolbar_frame)
+        export_frame.pack(side=tk.RIGHT, padx=10)
+        
+        export_btn = ttk.Button(
+            export_frame,
+            text="Export Results",
+            command=self._export_results
+        )
+        export_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Batch processing controls
+        batch_frame = ttk.Frame(toolbar_frame)
+        batch_frame.pack(side=tk.RIGHT, padx=10)
+        
+        batch_btn = ttk.Button(
+            batch_frame,
+            text="Batch Process",
+            command=self._batch_process
+        )
+        batch_btn.pack(side=tk.RIGHT, padx=5)
     
         # Action buttons
         action_frame = ttk.Frame(controls_frame)
@@ -594,6 +671,11 @@ class ReviewGUI:
         self.root.bind('t', lambda e: self._toggle_theme())
         self.root.bind('<F5>', lambda e: self.load_items())
         self.root.bind('<F11>', lambda e: self._toggle_fullscreen())
+        
+        # Setup drag and drop functionality if available
+        if HAS_DND:
+            self.root.drop_target_register(DND_FILES)
+            self.root.dnd_bind('<<Drop>>', self._handle_file_drop)
     
     def _toggle_theme(self):
         """Toggle between light and dark theme"""
@@ -807,9 +889,17 @@ class ReviewGUI:
             self.filename_label.config(text=str(img_path.name))
             
             try:
-                # Analyze the image
-                self.status_label.config(text="Analyzing image...")
-                description, clean_caption = self.model.analyze_image(str(img_path))
+                # Check cache first
+                if str(img_path) in self.image_cache:
+                    logger.info(f"Using cached analysis for {img_path}")
+                    description, clean_caption = self.image_cache[str(img_path)]
+                else:
+                    # Analyze the image
+                    self.status_label.config(text="Analyzing image...")
+                    description, clean_caption = self.model.analyze_image(str(img_path))
+                    # Cache the result
+                    self.image_cache[str(img_path)] = (description, clean_caption)
+                    
                 self.status_label.config(text="Analysis complete")
             except Exception as e:
                 logger.error(f"Error analyzing image: {str(e)}")
@@ -871,10 +961,39 @@ class ReviewGUI:
             # Update status
             self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
             
+            # Preload next few images for faster navigation
+            self._preload_next_images()
+            
         except Exception as e:
             logger.error(f"Error showing current item: {str(e)}")
             self.status_label.config(text=f"Error displaying image: {str(e)}")
             raise
+            
+    def _preload_next_images(self):
+        """Preload the next few images for faster navigation"""
+        # Get next 3 images to preload
+        preload_count = 3
+        next_indices = [
+            (self.current + i) % len(self.items) 
+            for i in range(1, preload_count + 1) 
+            if self.current + i < len(self.items)
+        ]
+        
+        import threading
+        
+        def preload_worker(idx):
+            try:
+                _, _, img_path = self.items[idx]
+                if str(img_path) not in self.image_cache:
+                    logger.info(f"Preloading analysis for {img_path}")
+                    description, clean_caption = self.model.analyze_image(str(img_path))
+                    self.image_cache[str(img_path)] = (description, clean_caption)
+            except Exception as e:
+                logger.error(f"Error preloading image {idx}: {str(e)}")
+        
+        # Start preloading threads
+        for idx in next_indices:
+            threading.Thread(target=preload_worker, args=(idx,), daemon=True).start()
 
     def move_item(self, dest_dir: Path):
         """Move current item to destination directory with error handling"""
@@ -975,12 +1094,307 @@ class ReviewGUI:
             txt_path = img_path.with_suffix('.txt')
             txt_path.write_text(caption_to_save, encoding='utf-8')
             
+            # Update cache
+            self.image_cache[str(img_path)] = (edited_text, clean_caption)
+            
             self.status_label.config(text="Caption updated successfully")
             logger.info(f"Updated caption for {img_path.name}")
         except Exception as e:
             logger.error(f"Error saving caption: {str(e)}")
             self.status_label.config(text=f"Error saving caption")
             messagebox.showerror("Error", f"Failed to save caption: {str(e)}")
+            
+    def _handle_file_drop(self, event):
+        """Handle files dropped onto the application window"""
+        try:
+            # Get dropped files (format varies between OS)
+            files = event.data.replace('{', '').replace('}', '')
+            
+            # Split multiple files if needed
+            if " " in files:
+                file_list = files.split(" ")
+            else:
+                file_list = [files]
+                
+            # Filter for supported image formats
+            valid_images = []
+            for file_path in file_list:
+                # Clean up path (may include unwanted characters)
+                file_path = file_path.strip()
+                if file_path.startswith('"') and file_path.endswith('"'):
+                    file_path = file_path[1:-1]
+                
+                path_obj = Path(file_path)
+                if self.dataset_prep.is_supported_image(path_obj):
+                    valid_images.append(path_obj)
+            
+            if not valid_images:
+                messagebox.showinfo("Info", "No valid image files were dropped. Supported formats: .jpg, .jpeg, .png")
+                return
+                
+            # Ask user what to do with the images
+            action = messagebox.askyesnocancel(
+                "Process Dropped Images", 
+                f"{len(valid_images)} image(s) dropped. Do you want to:\n\n"
+                f"Yes: Copy to review directory\n"
+                f"No: Process in place\n"
+                f"Cancel: Ignore dropped files"
+            )
+            
+            if action is None:  # Cancel
+                return
+                
+            if action:  # Yes - copy to review directory
+                for img_path in valid_images:
+                    # Copy to review directory
+                    dest_path = self.review_dir / img_path.name
+                    shutil.copy2(img_path, dest_path)
+                
+                # Reload items
+                self.load_items()
+                self.status_label.config(text=f"Added {len(valid_images)} image(s) to review directory")
+            else:  # No - process in place
+                # Create a temporary list of items
+                temp_items = []
+                for img_path in valid_images:
+                    base_name = img_path.stem
+                    json_path = img_path.parent / f"{base_name}_for_review.json"
+                    
+                    if not json_path.exists():
+                        json_path.write_text(
+                            json.dumps({"results": {"caption": ""}}, indent=2),
+                            encoding='utf-8'
+                        )
+                    
+                    temp_items.append((base_name, json_path, img_path))
+                
+                # Ask if user wants to batch process
+                do_batch = messagebox.askyesno(
+                    "Batch Process",
+                    f"Do you want to batch process all {len(valid_images)} dropped image(s)?"
+                )
+                
+                if do_batch:
+                    self._process_batch(temp_items)
+                else:
+                    # Add to the items list and show first
+                    self.items = temp_items + self.items
+                    self.current = 0
+                    self.show_current()
+                    self.status_label.config(text=f"Added {len(valid_images)} image(s) for review")
+                
+        except Exception as e:
+            logger.error(f"Error handling dropped files: {str(e)}")
+            self.status_label.config(text="Error processing dropped files")
+            messagebox.showerror("Error", f"Failed to process dropped files: {str(e)}")
+            
+    def _export_results(self):
+        """Export analysis results to various formats"""
+        if not self.items and len(self.image_cache) == 0:
+            messagebox.showinfo("Export", "No results to export.")
+            return
+            
+        try:
+            # Ask user for export format
+            export_format = messagebox.askquestion(
+                "Export Format",
+                "Do you want to export as CSV?\n\n"
+                "Yes: Export as CSV\n"
+                "No: Export as JSON"
+            )
+            
+            # Get export path
+            if export_format == 'yes':
+                export_path = filedialog.asksaveasfilename(
+                    defaultextension=".csv",
+                    filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+                    title="Export results as CSV"
+                )
+                if not export_path:
+                    return
+                    
+                # Export as CSV
+                with open(export_path, 'w', newline='', encoding='utf-8') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow(['Filename', 'Caption', 'Path'])
+                    
+                    # Export current items
+                    for base_name, json_path, img_path in self.items:
+                        try:
+                            data = json.loads(json_path.read_text(encoding='utf-8'))
+                            caption = data.get("results", {}).get("caption", "")
+                            writer.writerow([img_path.name, caption, str(img_path)])
+                        except Exception as e:
+                            logger.warning(f"Error exporting {img_path.name}: {str(e)}")
+                            
+                    # Export cached items that might not be in the current items list
+                    for path_str, (description, _) in self.image_cache.items():
+                        path = Path(path_str)
+                        # Check if this path is already in the items list
+                        if not any(str(img_path) == path_str for _, _, img_path in self.items):
+                            writer.writerow([path.name, description, path_str])
+                
+            else:
+                export_path = filedialog.asksaveasfilename(
+                    defaultextension=".json",
+                    filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+                    title="Export results as JSON"
+                )
+                if not export_path:
+                    return
+                    
+                # Export as JSON
+                export_data = {"images": []}
+                
+                # Export current items
+                for base_name, json_path, img_path in self.items:
+                    try:
+                        data = json.loads(json_path.read_text(encoding='utf-8'))
+                        caption = data.get("results", {}).get("caption", "")
+                        export_data["images"].append({
+                            "filename": img_path.name,
+                            "path": str(img_path),
+                            "caption": caption
+                        })
+                    except Exception as e:
+                        logger.warning(f"Error exporting {img_path.name}: {str(e)}")
+                
+                # Export cached items that might not be in the current items list
+                for path_str, (description, _) in self.image_cache.items():
+                    path = Path(path_str)
+                    # Check if this path is already in the items list
+                    if not any(str(img_path) == path_str for _, _, img_path in self.items):
+                        export_data["images"].append({
+                            "filename": path.name,
+                            "path": path_str,
+                            "caption": description
+                        })
+                
+                with open(export_path, 'w', encoding='utf-8') as jsonfile:
+                    json.dump(export_data, jsonfile, indent=2)
+            
+            self.status_label.config(text=f"Results exported to {export_path}")
+            messagebox.showinfo("Export Complete", f"Results exported successfully to {export_path}")
+            
+        except Exception as e:
+            logger.error(f"Error exporting results: {str(e)}")
+            self.status_label.config(text="Error exporting results")
+            messagebox.showerror("Export Error", f"Failed to export results: {str(e)}")
+            
+    def _batch_process(self):
+        """Batch process all images in the review directory"""
+        # Confirm with user
+        if not self.items:
+            messagebox.showinfo("Batch Process", "No images to process.")
+            return
+            
+        confirm = messagebox.askyesno(
+            "Batch Process",
+            f"Do you want to batch process all {len(self.items)} images?\n\n"
+            f"This will analyze all images with the current model ({self.model_name})."
+        )
+        
+        if not confirm:
+            return
+            
+        self._process_batch(self.items)
+        
+    def _process_batch(self, items_to_process):
+        """Process a batch of images"""
+        import threading
+        import queue
+        
+        # Create a processing queue
+        process_queue = queue.Queue()
+        for item in items_to_process:
+            process_queue.put(item)
+        
+        # Setup progress tracking
+        total = len(items_to_process)
+        processed = [0]  # Use list for mutable reference in threads
+        
+        # Create a progress dialog
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Batch Processing")
+        progress_window.geometry("400x150")
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+        
+        # Add progress label and bar
+        ttk.Label(progress_window, text="Processing images...").pack(pady=10)
+        progress_var = tk.IntVar()
+        progress_bar = ttk.Progressbar(
+            progress_window, 
+            variable=progress_var, 
+            maximum=total,
+            length=350
+        )
+        progress_bar.pack(pady=10, padx=25)
+        
+        status_label = ttk.Label(progress_window, text="Starting...")
+        status_label.pack(pady=10)
+        
+        cancel_flag = [False]  # Mutable flag for cancellation
+        
+        # Add cancel button
+        cancel_btn = ttk.Button(
+            progress_window, 
+            text="Cancel",
+            command=lambda: cancel_flag.__setitem__(0, True)
+        )
+        cancel_btn.pack(pady=10)
+        
+        def worker():
+            """Worker thread for processing images"""
+            while not process_queue.empty() and not cancel_flag[0]:
+                try:
+                    # Get next item
+                    base_name, json_path, img_path = process_queue.get_nowait()
+                    
+                    # Update status
+                    status_label.config(text=f"Processing: {img_path.name}")
+                    
+                    # Skip if already in cache
+                    if str(img_path) in self.image_cache:
+                        description, clean_caption = self.image_cache[str(img_path)]
+                    else:
+                        # Analyze image
+                        description, clean_caption = self.model.analyze_image(str(img_path))
+                        self.image_cache[str(img_path)] = (description, clean_caption)
+                    
+                    # Apply trigger word if needed
+                    if self.trigger_word and clean_caption:
+                        clean_caption = f"{self.trigger_word}, {clean_caption}"
+                    
+                    # Save analysis results
+                    data = {"results": {"caption": description}}
+                    json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                    
+                    if clean_caption:
+                        self.dataset_prep.create_caption_file(str(img_path), clean_caption)
+                    
+                    # Update progress
+                    processed[0] += 1
+                    progress_var.set(processed[0])
+                    
+                except queue.Empty:
+                    break
+                except Exception as e:
+                    logger.error(f"Error in batch processing: {str(e)}")
+            
+            # Check if we're done or canceled
+            if processed[0] >= total or cancel_flag[0]:
+                progress_window.after(100, progress_window.destroy)
+                if cancel_flag[0]:
+                    self.status_label.config(text=f"Batch processing canceled. {processed[0]}/{total} completed.")
+                else:
+                    self.status_label.config(text=f"Batch processing complete. {processed[0]}/{total} images processed.")
+        
+        # Start worker threads (use number of CPU cores or max 4)
+        import multiprocessing
+        num_workers = min(multiprocessing.cpu_count(), 4)
+        for _ in range(num_workers):
+            threading.Thread(target=worker, daemon=True).start()
 
 def main():
     parser = argparse.ArgumentParser(description='AI Training Dataset Preparation Tool')

@@ -48,21 +48,71 @@ class Florence2Model(BaseVisionModel):
         """Set up the Florence-2 model following official implementation."""
         try:
             from transformers import AutoProcessor, AutoModelForCausalLM
+            import torch
             
             logger.info("Loading Florence-2 model...")
             model_path = "microsoft/Florence-2-large"
             
-            # Initialize model without device_map for proper loading
+            # Check PyTorch version for vulnerability warning
+            torch_version = torch.__version__
+            required_version = "2.6.0"
+            
+            # Try to parse versions for comparison
             try:
+                torch_ver_parts = torch_version.split('.')
+                required_ver_parts = required_version.split('.')
+                
+                version_too_old = False
+                for i in range(min(len(torch_ver_parts), len(required_ver_parts))):
+                    if int(torch_ver_parts[i]) < int(required_ver_parts[i]):
+                        version_too_old = True
+                        break
+                    elif int(torch_ver_parts[i]) > int(required_ver_parts[i]):
+                        break
+                
+                if version_too_old:
+                    logger.warning(f"Your PyTorch version ({torch_version}) is older than the recommended minimum ({required_version})")
+                    logger.warning("You may encounter security warnings or errors with torch.load")
+                    logger.warning("Consider upgrading: pip install torch>=2.6.0 torchvision>=0.17.0")
+            except Exception:
+                # If parsing failed, just continue
+                pass
+            
+            # Initialize model with safetensors and other safety options
+            try:
+                logger.info("Attempting to load model with safetensors...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_path,
                     torch_dtype=self.torch_dtype,
-                    trust_remote_code=True
-                ).to(self.device)  # Move to device after initialization
+                    trust_remote_code=True,
+                    use_safetensors=True,
+                    low_cpu_mem_usage=True,
+                    device_map="auto"  # Use device_map for auto-placement
+                )
             except Exception as e:
-                logger.error(f"Failed to load model: {str(e)}")
-                raise RuntimeError("Model initialization failed") from e
+                logger.warning(f"Failed to load with safetensors: {str(e)}")
+                logger.info("Attempting to load with standard method...")
+                
+                try:
+                    # Fallback to standard loading with explicit device
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        torch_dtype=self.torch_dtype,
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True,
+                        local_files_only=False  # Force download if needed
+                    ).to(self.device)
+                except Exception as load_error:
+                    logger.error(f"Failed to load model: {str(load_error)}")
+                    error_message = (
+                        f"Model loading failed. This may be due to a PyTorch security restriction.\n"
+                        f"Your PyTorch version may be too old. Please upgrade:\n"
+                        f"pip install --upgrade torch>=2.6.0 torchvision>=0.17.0\n\n"
+                        f"Original error: {str(load_error)}"
+                    )
+                    raise RuntimeError("Model initialization failed") from load_error
 
+            # Load processor (less likely to have issues)
             try:
                 self.processor = AutoProcessor.from_pretrained(
                     model_path,

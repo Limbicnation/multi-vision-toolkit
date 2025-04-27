@@ -13,6 +13,10 @@
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
 - **Quality Controls**: Generate captions in standard, detailed, or creative modes
+- **Drag and Drop**: Easily process images by dragging them directly into the application
+- **Batch Processing**: Process multiple images at once with progress tracking
+- **Export Functionality**: Export analysis results to CSV or JSON formats
+- **Image Caching**: Faster navigation with preloading and caching of image analyses
 
 ## 🛠️ Installation
 
@@ -25,8 +29,10 @@
 conda create -n vision-env python=3.11
 conda activate vision-env
 
-# Install PyTorch with CUDA support
-conda install pytorch torchvision pytorch-cuda=11.8 -c pytorch -c nvidia
+# Install PyTorch with CUDA support (version 2.6.0+ required to address CVE-2025-32434)
+conda install pytorch=2.6.0 torchvision=0.17.0 pytorch-cuda=12.1 -c pytorch -c nvidia
+# OR use pip:
+pip install torch>=2.6.0 torchvision>=0.17.0 --extra-index-url https://download.pytorch.org/whl/cu121
 
 # Install core dependencies
 pip install -r requirements.txt
@@ -63,6 +69,10 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 - **Metadata Tracking**: Auto-generated JSON and text files
 - **Caption Quality Settings**: Choose between standard, detailed, and creative captions
 - **Light/Dark Mode**: Theme toggle for comfortable viewing
+- **Drag and Drop Support**: Drag images directly into the app for processing
+- **Batch Processing**: Process multiple images simultaneously with a progress indicator
+- **Export Options**: Export results as CSV or JSON for external use
+- **Quick Navigation**: Fast browsing with image caching and preloading
 
 ## 📝 Technical Details
 
@@ -86,6 +96,27 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 - **Image Errors**: Verify image format and permissions
 - **Qwen Model Errors**: Make sure to install `transformers` from GitHub and `qwen-vl-utils` with the [decord] feature
 - **KeyError: 'qwen2_5_vl'**: Update transformers with `pip install git+https://github.com/huggingface/transformers.git`
+
+### Common Error: CVE-2025-32434 Vulnerability
+
+If you encounter this error:
+```
+Failed to load model: Due to a serious vulnerability issue in `torch.load`, even with `weights_only=True`, we now require users to upgrade torch to at least v2.6
+```
+
+This is due to a security measure in newer model loading functions that requires PyTorch 2.6+:
+
+1. **Update PyTorch**:
+   ```bash
+   pip install torch>=2.6.0 torchvision>=0.17.0 --extra-index-url https://download.pytorch.org/whl/cu121
+   ```
+
+2. **Try a different model**: If updating isn't an option, try using a different model like the Qwen model:
+   ```bash
+   python main.py --review_dir data/review --model qwen
+   ```
+
+3. **Force use safetensors**: Models that use the safetensors format aren't affected by this vulnerability
 
 ## 📄 License
 
