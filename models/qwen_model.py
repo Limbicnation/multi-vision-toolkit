@@ -6,7 +6,16 @@ import importlib
 from PIL import Image
 import os
 from typing import Tuple, Optional
-from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers import AutoModelForCausalLM
+from transformers.processing_utils import ProcessingMixin
+
+# Try importing specific processor class, but don't fail if not available
+try:
+    from transformers import Qwen2VLProcessor
+    HAS_SPECIFIC_PROCESSOR = True
+except ImportError:
+    HAS_SPECIFIC_PROCESSOR = False
+    from transformers import AutoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -58,19 +67,35 @@ class QwenModel(BaseVisionModel):
             
             logger.info(f"Loading Qwen2.5-VL model from {self.model_path}...")
             
-            # Initialize model and processor using direct AutoModel classes
+            # Initialize model with trust_remote_code=True which is essential
             try:
-                # Use the simpler direct approach as suggested
-                self.processor = AutoProcessor.from_pretrained(self.model_path)
-                logger.info("Successfully loaded Qwen2.5-VL processor")
-                
+                # Load the model first as it's more likely to succeed
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True  # Important for model-specific code
+                    trust_remote_code=True,  # This is critical for newer models
+                    device_map="auto" if torch.cuda.is_available() else None
                 )
                 logger.info("Successfully loaded Qwen2.5-VL model")
+                
+                # Try to load processor with specific class first, then fall back
+                try:
+                    if HAS_SPECIFIC_PROCESSOR:
+                        logger.info("Attempting to load with specific Qwen2VLProcessor...")
+                        self.processor = Qwen2VLProcessor.from_pretrained(self.model_path)
+                    else:
+                        logger.info("Specific processor not available, using AutoProcessor...")
+                        self.processor = AutoProcessor.from_pretrained(
+                            self.model_path, 
+                            trust_remote_code=True
+                        )
+                    logger.info("Successfully loaded Qwen2.5-VL processor")
+                except Exception as proc_error:
+                    logger.warning(f"Error loading processor: {str(proc_error)}")
+                    logger.info("Attempting direct model usage without processor...")
+                    # We'll handle operations that need the processor in analyze_image
+                    self.processor = None
             except Exception as e:
-                logger.error(f"Failed to load model or processor: {str(e)}")
+                logger.error(f"Failed to load model: {str(e)}")
                 raise RuntimeError("Model initialization failed. Make sure transformers library is updated.") from e
             
             # Store the process_vision_info function for later use
@@ -128,18 +153,37 @@ class QwenModel(BaseVisionModel):
 
             # Prepare inputs for the model
             try:
-                text = self.processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=True
-                )
-                image_inputs, video_inputs = self.process_vision_info(messages)
-                inputs = self.processor(
-                    text=[text],
-                    images=image_inputs,
-                    videos=video_inputs,
-                    padding=True,
-                    return_tensors="pt",
-                )
-                inputs = inputs.to(self.device)
+                if self.processor is None:
+                    logger.warning("No processor available. Using direct model access approach.")
+                    # This is a simplified approach when the processor isn't available
+                    # It might not work for all cases but it's a fallback
+                    from transformers import AutoTokenizer
+                    try:
+                        tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        # Simple tokenization of the instruction
+                        text = f"<image>\n{instruction}"
+                        inputs = tokenizer(text, return_tensors="pt").to(self.device)
+                        # Add the image as pixel_values (simplified approach)
+                        inputs["pixel_values"] = torch.stack([self._preprocess_image(image)]).to(self.device)
+                    except Exception as tokenizer_error:
+                        logger.error(f"Failed to create inputs without processor: {str(tokenizer_error)}")
+                        return "Error: Failed to process inputs. The model processor is not available.", None
+                else:
+                    # Normal processing with processor
+                    text = self.processor.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
+                    )
+                    image_inputs, video_inputs = self.process_vision_info(messages)
+                    inputs = self.processor(
+                        text=[text],
+                        images=image_inputs,
+                        videos=video_inputs,
+                        padding=True,
+                        return_tensors="pt",
+                    )
+                    inputs = inputs.to(self.device)
+                    
+                # Add support for handling processor-less generation
                 
                 # Generate caption
                 with torch.inference_mode():
@@ -164,15 +208,35 @@ class QwenModel(BaseVisionModel):
                         top_p=top_p
                     )
                 
-                # Extract only the newly generated tokens
-                generated_ids_trimmed = [
-                    out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-                ]
-                
-                # Decode caption
-                caption = self.processor.batch_decode(
-                    generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                )[0]
+                # Extract and decode the generated tokens
+                if self.processor is None:
+                    try:
+                        # Fallback to using tokenizer for decoding
+                        from transformers import AutoTokenizer
+                        tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                        
+                        # Extract only the newly generated tokens
+                        generated_ids_trimmed = [
+                            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                        ]
+                        
+                        # Decode caption using tokenizer instead of processor
+                        caption = tokenizer.batch_decode(
+                            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                        )[0]
+                    except Exception as decode_error:
+                        logger.error(f"Error decoding output: {str(decode_error)}")
+                        caption = "Error decoding model output. The processor is not available."
+                else:
+                    # Extract only the newly generated tokens
+                    generated_ids_trimmed = [
+                        out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+                    ]
+                    
+                    # Decode caption using processor
+                    caption = self.processor.batch_decode(
+                        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+                    )[0]
                 
                 # Clean output
                 caption = self.clean_output(caption)
@@ -190,6 +254,32 @@ class QwenModel(BaseVisionModel):
             logger.error(f"Error analyzing image with Qwen2.5-VL: {str(e)}")
             return f"Error: An unexpected error occurred. {str(e)}", None
 
+    def _preprocess_image(self, image):
+        """
+        Preprocess an image for the model when no processor is available.
+        
+        Args:
+            image (PIL.Image): The input image
+            
+        Returns:
+            torch.Tensor: The preprocessed image tensor
+        """
+        try:
+            # Basic preprocessing for vision models (resize to 224x224, normalize)
+            from torchvision import transforms
+            
+            transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+            
+            return transform(image)
+        except Exception as e:
+            logger.error(f"Error preprocessing image: {str(e)}")
+            # Return a blank tensor as fallback
+            return torch.zeros((3, 224, 224), device=self.device)
+    
     @classmethod
     def is_available(cls) -> bool:
         """Check if the model can be initialized with current environment."""
