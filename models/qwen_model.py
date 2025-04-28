@@ -6,6 +6,7 @@ import importlib
 from PIL import Image
 import os
 from typing import Tuple, Optional
+from transformers import AutoModelForCausalLM, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -53,36 +54,24 @@ class QwenModel(BaseVisionModel):
     def _setup_model(self) -> None:
         """Set up the Qwen2.5-VL-3B-Instruct-AWQ model."""
         try:
-            # Try to import using generic model classes which are more widely supported
-            from transformers import (
-                AutoModelForCausalLM,
-                AutoTokenizer, 
-                AutoProcessor
-            )
             from qwen_vl_utils import process_vision_info
             
             logger.info(f"Loading Qwen2.5-VL model from {self.model_path}...")
             
-            # Initialize model and processor
+            # Initialize model and processor using direct AutoModel classes
             try:
-                # Use AutoModelForCausalLM instead of specific Qwen class
+                # Use the simpler direct approach as suggested
+                self.processor = AutoProcessor.from_pretrained(self.model_path)
+                logger.info("Successfully loaded Qwen2.5-VL processor")
+                
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
-                    torch_dtype="auto",
-                    device_map="auto",
                     trust_remote_code=True  # Important for model-specific code
                 )
                 logger.info("Successfully loaded Qwen2.5-VL model")
             except Exception as e:
-                logger.error(f"Failed to load model: {str(e)}")
+                logger.error(f"Failed to load model or processor: {str(e)}")
                 raise RuntimeError("Model initialization failed. Make sure transformers library is updated.") from e
-
-            try:
-                self.processor = AutoProcessor.from_pretrained(self.model_path)
-                logger.info("Successfully loaded Qwen2.5-VL processor")
-            except Exception as e:
-                logger.error(f"Failed to load processor: {str(e)}")
-                raise RuntimeError("Processor initialization failed") from e
             
             # Store the process_vision_info function for later use
             self.process_vision_info = process_vision_info
