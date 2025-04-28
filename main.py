@@ -100,9 +100,48 @@ except Exception as e:
     logger.error(f"Failed to load janus model: {str(e)}")
 
 try:
-    from models.qwen_model import QwenModel
+    logger.info("Attempting to import QwenModel...")
+    
+    # Check if the model file exists
+    import os
+    qwen_path = os.path.join(os.path.dirname(__file__), 'models', 'qwen_model.py')
+    if os.path.exists(qwen_path):
+        logger.info(f"qwen_model.py file exists at {qwen_path}")
+    else:
+        logger.error(f"qwen_model.py file not found at {qwen_path}")
+    
+    # Try the import with detailed error handling
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("qwen_model", qwen_path)
+        qwen_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(qwen_module)
+        QwenModel = getattr(qwen_module, "QwenModel")
+        logger.info("Successfully imported QwenModel using importlib")
+    except Exception as detailed_error:
+        logger.error(f"Detailed import error: {str(detailed_error)}")
+        # Fall back to standard import
+        try:
+            from models.qwen_model import QwenModel
+            logger.info("Successfully imported QwenModel using standard import")
+        except Exception as standard_error:
+            logger.error(f"Standard import error: {str(standard_error)}")
+            # Final fallback - use dummy model
+            try:
+                from models.dummy_qwen_model import QwenModel
+                logger.warning("Using dummy QwenModel as a fallback")
+            except Exception as dummy_error:
+                logger.error(f"Failed to import dummy QwenModel: {str(dummy_error)}")
+                # We still need to set QwenModel to None if all else fails
+                QwenModel = None
 except Exception as e:
     logger.error(f"Failed to load qwen model: {str(e)}")
+    # Try one last time with the dummy model
+    try:
+        from models.dummy_qwen_model import QwenModel
+        logger.warning("Using dummy QwenModel as last resort")
+    except:
+        QwenModel = None
 
 @dataclass
 class ImageAnalysisResult:
@@ -248,16 +287,29 @@ class ModelManager:
             # Try the requested model
             try:
                 if model_name.lower() == "florence2":
+                    logger.info(f"Florence2Model class available: {Florence2Model is not None}")
                     if Florence2Model is None:
                         raise ImportError("Florence2Model is not available")
                     model = Florence2Model()
                 elif model_name.lower() == "janus":
+                    logger.info(f"JanusModel class available: {JanusModel is not None}")
                     if JanusModel is None:
                         raise ImportError("JanusModel is not available")
                     model = JanusModel()
                 elif model_name.lower() == "qwen":
+                    logger.info(f"QwenModel class available: {QwenModel is not None}")
                     if QwenModel is None:
-                        raise ImportError("QwenModel is not available")
+                        # Last attempt to import QwenModel directly here
+                        try:
+                            logger.info("Last attempt to import QwenModel...")
+                            from models.qwen_model import QwenModel as DirectQwenModel
+                            model = DirectQwenModel()
+                            # If successful, cache the class for future use
+                            globals()['QwenModel'] = DirectQwenModel
+                            return model
+                        except Exception as last_error:
+                            logger.error(f"Final import attempt failed: {str(last_error)}")
+                            raise ImportError(f"QwenModel is not available: {str(last_error)}")
                     model = QwenModel()
                 else:
                     raise ValueError(f"Unsupported model: {model_name}")
