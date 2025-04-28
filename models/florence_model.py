@@ -99,8 +99,18 @@ class Florence2Model(BaseVisionModel):
                 # If parsing failed, just continue
                 pass
             
-            # Initialize model with safetensors and other safety options
+            # Initialize model with added error handling for timm issues
             try:
+                # Replace timm import in globals to prevent circular imports later
+                try:
+                    import sys
+                    if 'timm.models.layers' in sys.modules:
+                        logger.warning("Detected potential problematic timm import. Attempting workaround...")
+                        import timm.layers
+                        sys.modules['timm.models.layers'] = timm.layers
+                except Exception as timm_error:
+                    logger.warning(f"Timm import fix failed (non-critical): {str(timm_error)}")
+                
                 logger.info("Attempting to load model with safetensors...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_path,
@@ -108,7 +118,8 @@ class Florence2Model(BaseVisionModel):
                     trust_remote_code=True,
                     use_safetensors=True,
                     low_cpu_mem_usage=True,
-                    device_map="auto"  # Use device_map for auto-placement
+                    device_map="auto",
+                    revision="main"  # Explicitly use main branch
                 )
             except Exception as e:
                 logger.warning(f"Failed to load with safetensors: {str(e)}")
@@ -121,14 +132,15 @@ class Florence2Model(BaseVisionModel):
                         torch_dtype=self.torch_dtype,
                         trust_remote_code=True,
                         low_cpu_mem_usage=True,
-                        local_files_only=False  # Force download if needed
+                        local_files_only=False,  # Force download if needed
+                        revision="main"  # Explicitly use main branch
                     ).to(self.device)
                 except Exception as load_error:
                     logger.error(f"Failed to load model: {str(load_error)}")
                     error_message = (
-                        f"Model loading failed. This may be due to a PyTorch security restriction.\n"
-                        f"Your PyTorch version may be too old. Please upgrade:\n"
-                        f"pip install --upgrade torch>=2.6.0 torchvision>=0.17.0\n\n"
+                        f"Model loading failed. This may be due to a PyTorch security restriction or timm compatibility issue.\n"
+                        f"Try installing the exact required versions:\n"
+                        f"pip install torch==2.6.0 torchvision==0.17.0 timm==0.9.12\n\n"
                         f"Original error: {str(load_error)}"
                     )
                     raise RuntimeError("Model initialization failed") from load_error
@@ -239,7 +251,24 @@ class Florence2Model(BaseVisionModel):
     def is_available(cls) -> bool:
         """Check if the model can be initialized with current environment."""
         try:
-            cls._check_dependencies()
-            return True
-        except Exception:
+            # Check for required dependencies except timm which might have issues
+            import torch
+            import transformers
+            
+            # Test a direct import from transformers for the necessary classes
+            try:
+                from transformers import AutoProcessor, AutoModelForCausalLM
+                has_transformers = True
+            except ImportError:
+                logger.error("Required transformers classes not found. Please update transformers.")
+                has_transformers = False
+                
+            # Check CUDA availability
+            has_cuda = torch.cuda.is_available()
+            if not has_cuda:
+                logger.warning("CUDA not available. Model will run in CPU mode with greatly reduced performance.")
+                
+            return has_transformers
+        except Exception as e:
+            logger.error(f"Failed to check model availability: {str(e)}")
             return False

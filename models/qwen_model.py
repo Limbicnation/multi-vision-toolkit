@@ -53,8 +53,9 @@ class QwenModel(BaseVisionModel):
     def _setup_model(self) -> None:
         """Set up the Qwen2.5-VL-3B-Instruct-AWQ model."""
         try:
+            # Try to import using generic model classes which are more widely supported
             from transformers import (
-                Qwen2_5_VLForConditionalGeneration, 
+                AutoModelForCausalLM,
                 AutoTokenizer, 
                 AutoProcessor
             )
@@ -64,10 +65,12 @@ class QwenModel(BaseVisionModel):
             
             # Initialize model and processor
             try:
-                self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                # Use AutoModelForCausalLM instead of specific Qwen class
+                self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
                     torch_dtype="auto",
-                    device_map="auto"
+                    device_map="auto",
+                    trust_remote_code=True  # Important for model-specific code
                 )
                 logger.info("Successfully loaded Qwen2.5-VL model")
             except Exception as e:
@@ -202,14 +205,14 @@ class QwenModel(BaseVisionModel):
     def is_available(cls) -> bool:
         """Check if the model can be initialized with current environment."""
         try:
-            # Check for transformers version that supports Qwen2.5-VL
+            # Check for transformers with AutoModel support
             import transformers
             try:
-                from transformers import Qwen2_5_VLForConditionalGeneration
-                has_qwen = True
+                from transformers import AutoModelForCausalLM
+                has_transformer = True
             except ImportError:
-                logger.error("Your transformers version doesn't support Qwen2.5-VL. Please update transformers.")
-                has_qwen = False
+                logger.error("Your transformers version doesn't support AutoModelForCausalLM. Please update transformers.")
+                has_transformer = False
             
             # Check for qwen_vl_utils
             try:
@@ -225,7 +228,7 @@ class QwenModel(BaseVisionModel):
             if not has_cuda:
                 logger.warning("CUDA not available. Model will run in CPU mode with greatly reduced performance.")
             
-            return has_qwen and has_qwen_utils
+            return has_transformer and has_qwen_utils
         except ImportError as e:
             logger.error(f"Required package not found: {str(e)}")
             return False
