@@ -6,16 +6,7 @@ import importlib
 from PIL import Image
 import os
 from typing import Tuple, Optional
-from transformers import AutoModelForCausalLM
-from transformers.processing_utils import ProcessingMixin
-
-# Try importing specific processor class, but don't fail if not available
-try:
-    from transformers import Qwen2VLProcessor
-    HAS_SPECIFIC_PROCESSOR = True
-except ImportError:
-    HAS_SPECIFIC_PROCESSOR = False
-    from transformers import AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -63,40 +54,31 @@ class QwenModel(BaseVisionModel):
     def _setup_model(self) -> None:
         """Set up the Qwen2.5-VL-3B-Instruct-AWQ model."""
         try:
+            # Using the specific implementation suggested
+            from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
             from qwen_vl_utils import process_vision_info
             
             logger.info(f"Loading Qwen2.5-VL model from {self.model_path}...")
             
-            # Initialize model with trust_remote_code=True which is essential
             try:
-                # Load the model first as it's more likely to succeed
-                self.model = AutoModelForCausalLM.from_pretrained(
+                # Load the model with explicit settings
+                self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True,  # This is critical for newer models
-                    device_map="auto" if torch.cuda.is_available() else None
+                    torch_dtype=torch.float16,  # Using float16 instead of auto
+                    device_map="auto",
+                    trust_remote_code=True  # Critical parameter
                 )
                 logger.info("Successfully loaded Qwen2.5-VL model")
                 
-                # Try to load processor with specific class first, then fall back
-                try:
-                    if HAS_SPECIFIC_PROCESSOR:
-                        logger.info("Attempting to load with specific Qwen2VLProcessor...")
-                        self.processor = Qwen2VLProcessor.from_pretrained(self.model_path)
-                    else:
-                        logger.info("Specific processor not available, using AutoProcessor...")
-                        self.processor = AutoProcessor.from_pretrained(
-                            self.model_path, 
-                            trust_remote_code=True
-                        )
-                    logger.info("Successfully loaded Qwen2.5-VL processor")
-                except Exception as proc_error:
-                    logger.warning(f"Error loading processor: {str(proc_error)}")
-                    logger.info("Attempting direct model usage without processor...")
-                    # We'll handle operations that need the processor in analyze_image
-                    self.processor = None
+                # Load processor with trust_remote_code
+                self.processor = AutoProcessor.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True
+                )
+                logger.info("Successfully loaded Qwen2.5-VL processor")
             except Exception as e:
-                logger.error(f"Failed to load model: {str(e)}")
-                raise RuntimeError("Model initialization failed. Make sure transformers library is updated.") from e
+                logger.error(f"Failed to load model or processor: {str(e)}")
+                raise RuntimeError(f"Failed to initialize Qwen2.5-VL model: {str(e)}") from e
             
             # Store the process_vision_info function for later use
             self.process_vision_info = process_vision_info
@@ -284,14 +266,14 @@ class QwenModel(BaseVisionModel):
     def is_available(cls) -> bool:
         """Check if the model can be initialized with current environment."""
         try:
-            # Check for transformers with AutoModel support
+            # Check for Qwen2_5_VLForConditionalGeneration support
             import transformers
             try:
-                from transformers import AutoModelForCausalLM
-                has_transformer = True
+                from transformers import Qwen2_5_VLForConditionalGeneration
+                has_qwen_class = True
             except ImportError:
-                logger.error("Your transformers version doesn't support AutoModelForCausalLM. Please update transformers.")
-                has_transformer = False
+                logger.error("Your transformers version doesn't support Qwen2_5_VLForConditionalGeneration. Please install transformers==4.36.2.")
+                has_qwen_class = False
             
             # Check for qwen_vl_utils
             try:
@@ -307,7 +289,7 @@ class QwenModel(BaseVisionModel):
             if not has_cuda:
                 logger.warning("CUDA not available. Model will run in CPU mode with greatly reduced performance.")
             
-            return has_transformer and has_qwen_utils
+            return has_qwen_class and has_qwen_utils
         except ImportError as e:
             logger.error(f"Required package not found: {str(e)}")
             return False
