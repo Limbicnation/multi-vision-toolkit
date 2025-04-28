@@ -95,9 +95,27 @@ except Exception as e:
     logger.error(f"Failed to load florence2 model: {str(e)}")
 
 try:
-    from models.janus_model import JanusModel
+    logger.info("Attempting to import JanusModel...")
+    try:
+        from models.janus_model import JanusModel
+        logger.info("Successfully imported JanusModel")
+    except Exception as standard_error:
+        logger.error(f"Standard Janus import error: {str(standard_error)}")
+        # Use dummy model as fallback
+        try:
+            from models.dummy_janus_model import JanusModel
+            logger.warning("Using dummy JanusModel as a fallback")
+        except Exception as dummy_error:
+            logger.error(f"Failed to import dummy JanusModel: {str(dummy_error)}")
+            JanusModel = None
 except Exception as e:
     logger.error(f"Failed to load janus model: {str(e)}")
+    # Try one last time with the dummy model
+    try:
+        from models.dummy_janus_model import JanusModel
+        logger.warning("Using dummy JanusModel as last resort")
+    except:
+        JanusModel = None
 
 try:
     logger.info("Attempting to import QwenModel...")

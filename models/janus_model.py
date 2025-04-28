@@ -32,7 +32,10 @@ class JanusModel(BaseVisionModel):
             logger.info(f"Loading model from {self.model_path}...")
             
             try:
-                self.processor = BlipProcessor.from_pretrained(self.model_path)
+                self.processor = BlipProcessor.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True  # Add trust_remote_code
+                )
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")
                 raise RuntimeError("Processor initialization failed") from e
@@ -40,7 +43,9 @@ class JanusModel(BaseVisionModel):
             try:
                 self.model = BlipForConditionalGeneration.from_pretrained(
                     self.model_path,
-                    torch_dtype=self.torch_dtype
+                    torch_dtype=self.torch_dtype,
+                    trust_remote_code=True,  # Add trust_remote_code
+                    revision="main"          # Explicitly use main branch
                 ).to(self.device)
             except Exception as e:
                 logger.error(f"Failed to load model: {str(e)}")
