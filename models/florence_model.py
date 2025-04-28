@@ -6,6 +6,15 @@ import torch
 import importlib
 from PIL import Image
 import os
+import sys
+
+# Handle potential circular import with torchvision
+try:
+    # Try to import torchvision directly
+    import torchvision
+except (ImportError, AttributeError) as e:
+    logging.warning(f"Issue with torchvision import: {str(e)}")
+    # If there's a circular import issue, we'll fix it later in the model setup
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +26,7 @@ class Florence2Model(BaseVisionModel):
         'timm': 'timm',
         'einops': 'einops',
         'torch': 'torch',
+        'torchvision': 'torchvision>=0.17.0',
         'PIL': 'Pillow'
     }
 
@@ -31,7 +41,18 @@ class Florence2Model(BaseVisionModel):
         missing_packages = []
         for package, pip_name in cls.REQUIRED_PACKAGES.items():
             try:
-                importlib.import_module(package)
+                # Special handling for torchvision due to potential circular import
+                if package == 'torchvision':
+                    try:
+                        import torchvision
+                        # Verify we can access a specific attribute to confirm proper import
+                        # This will catch circular import issues
+                        version = torchvision.__version__
+                    except (ImportError, AttributeError) as e:
+                        logger.warning(f"Issue with torchvision: {str(e)}")
+                        missing_packages.append((package, pip_name))
+                else:
+                    importlib.import_module(package)
             except ImportError:
                 missing_packages.append((package, pip_name))
 

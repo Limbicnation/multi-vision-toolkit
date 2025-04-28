@@ -84,12 +84,25 @@ if "HF_TOKEN" in os.environ:
         pass
 
 # Only import models after setting up environment
+# Define variables that will be properly set when imports succeed
+Florence2Model = None
+JanusModel = None
+QwenModel = None
+
 try:
     from models.florence_model import Florence2Model
+except Exception as e:
+    logger.error(f"Failed to load florence2 model: {str(e)}")
+
+try:
     from models.janus_model import JanusModel
+except Exception as e:
+    logger.error(f"Failed to load janus model: {str(e)}")
+
+try:
     from models.qwen_model import QwenModel
 except Exception as e:
-    logger.error(f"Error importing models: {str(e)}")
+    logger.error(f"Failed to load qwen model: {str(e)}")
 
 @dataclass
 class ImageAnalysisResult:
@@ -235,10 +248,16 @@ class ModelManager:
             # Try the requested model
             try:
                 if model_name.lower() == "florence2":
+                    if Florence2Model is None:
+                        raise ImportError("Florence2Model is not available")
                     model = Florence2Model()
                 elif model_name.lower() == "janus":
+                    if JanusModel is None:
+                        raise ImportError("JanusModel is not available")
                     model = JanusModel()
                 elif model_name.lower() == "qwen":
+                    if QwenModel is None:
+                        raise ImportError("QwenModel is not available")
                     model = QwenModel()
                 else:
                     raise ValueError(f"Unsupported model: {model_name}")
