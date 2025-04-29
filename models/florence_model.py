@@ -119,7 +119,8 @@ class Florence2Model(BaseVisionModel):
                     use_safetensors=True,
                     low_cpu_mem_usage=True,
                     device_map="auto",
-                    revision="main"  # Explicitly use main branch
+                    revision="main",  # Explicitly use main branch
+                    local_files_only=False  # Allow downloading if not available locally
                 )
             except Exception as e:
                 logger.warning(f"Failed to load with safetensors: {str(e)}")
@@ -149,7 +150,8 @@ class Florence2Model(BaseVisionModel):
             try:
                 self.processor = AutoProcessor.from_pretrained(
                     model_path,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=False  # Allow downloading if not available locally
                 )
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")

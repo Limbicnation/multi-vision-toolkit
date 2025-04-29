@@ -34,7 +34,8 @@ class JanusModel(BaseVisionModel):
             try:
                 self.processor = BlipProcessor.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True  # Add trust_remote_code
+                    trust_remote_code=True,  # Add trust_remote_code
+                    local_files_only=False  # Allow downloading if not available locally
                 )
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")
@@ -45,7 +46,8 @@ class JanusModel(BaseVisionModel):
                     self.model_path,
                     torch_dtype=self.torch_dtype,
                     trust_remote_code=True,  # Add trust_remote_code
-                    revision="main"          # Explicitly use main branch
+                    revision="main",         # Explicitly use main branch
+                    local_files_only=False   # Allow downloading if not available locally
                 ).to(self.device)
             except Exception as e:
                 logger.error(f"Failed to load model: {str(e)}")

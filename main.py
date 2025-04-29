@@ -63,17 +63,58 @@ def load_environment_from_dotenv():
                     line = line.strip()
                     if not line or line.startswith('#'):
                         continue
-                    key, value = line.split('=', 1)
-                    os.environ[key] = value
+                    try:
+                        key, value = line.split('=', 1)
+                        os.environ[key] = value
+                    except ValueError:
+                        # Skip lines that don't have key=value format
+                        continue
             logger.info("Successfully loaded environment variables from .env file")
             return True
+        else:
+            # If .env file doesn't exist, tell user they can create one
+            logger.info("No .env file found. You can create one from .env.example if you need to use a HuggingFace token.")
         return False
     except Exception as e:
         logger.warning(f"Error loading .env file: {str(e)}")
         return False
 
+def setup_cache_directory():
+    """Setup a persistent cache directory for models"""
+    try:
+        # First check if TRANSFORMERS_CACHE environment variable is already set
+        if "TRANSFORMERS_CACHE" in os.environ:
+            cache_dir = os.environ["TRANSFORMERS_CACHE"]
+            logger.info(f"Using configured transformer cache directory: {cache_dir}")
+            
+            # Make sure the directory exists
+            Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            return
+        
+        # Set up default cache in user directory to persist downloads
+        home_dir = Path.home()
+        cache_dir = home_dir / ".cache" / "florence2-vision-toolkit"
+        
+        # Create the directory if it doesn't exist
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Set the environment variables used by transformers and torch
+        os.environ["TRANSFORMERS_CACHE"] = str(cache_dir / "transformers")
+        os.environ["TORCH_HOME"] = str(cache_dir / "torch")
+        os.environ["HF_HOME"] = str(cache_dir / "huggingface")
+        
+        logger.info(f"Set up persistent cache at: {cache_dir}")
+    except Exception as e:
+        logger.warning(f"Failed to set up persistent cache: {str(e)}")
+        logger.info("Models will use the default temporary cache location")
+
 # Load HF token from environment at module level
 load_environment_from_dotenv()
+
+# Setup persistent cache for downloaded models
+setup_cache_directory()
+
+# Configure HuggingFace token if available
 if "HF_TOKEN" in os.environ:
     logger.info("HuggingFace token found in environment variables")
     os.environ["HUGGINGFACE_HUB_TOKEN"] = os.environ["HF_TOKEN"]
@@ -82,6 +123,9 @@ if "HF_TOKEN" in os.environ:
         os.environ["HF_HUB_TOKEN"] = os.environ["HF_TOKEN"]
     except:
         pass
+else:
+    logger.info("No HuggingFace token found. Some models may be unavailable or have limited functionality.")
+    logger.info("You can add your token to a .env file following the example in .env.example")
 
 # Only import models after setting up environment
 # Define variables that will be properly set when imports succeed
@@ -91,8 +135,15 @@ QwenModel = None
 
 try:
     from models.florence_model import Florence2Model
+    logger.info("Successfully imported Florence2Model")
 except Exception as e:
     logger.error(f"Failed to load florence2 model: {str(e)}")
+    try:
+        from models.dummy_florence_model import Florence2Model
+        logger.warning("Using dummy Florence2Model as a fallback")
+    except Exception as dummy_error:
+        logger.error(f"Failed to import dummy Florence2Model: {str(dummy_error)}")
+        Florence2Model = None
 
 try:
     logger.info("Attempting to import JanusModel...")
@@ -293,8 +344,11 @@ class ModelManager:
         self._current_model = None
         self._current_model_name = None
         
+        # Check if models are available locally
+        self.check_model_cache()
+        
     def initialize_model(self, model_name: str) -> object:
-        """Initialize a model with error handling and caching"""
+        """Initialize a model with error handling, caching, and auto-download support"""
         try:
             if model_name in self.models:
                 logger.info(f"Using cached model: {model_name}")
@@ -308,12 +362,28 @@ class ModelManager:
                     logger.info(f"Florence2Model class available: {Florence2Model is not None}")
                     if Florence2Model is None:
                         raise ImportError("Florence2Model is not available")
+                    
+                    # Show downloading notification to the user
+                    messagebox.showinfo(
+                        "Model Download",
+                        "The Florence-2 model will be downloaded if not available locally.\n\n"
+                        "This may take a few minutes on the first run. Please be patient."
+                    )
                     model = Florence2Model()
+                    
                 elif model_name.lower() == "janus":
                     logger.info(f"JanusModel class available: {JanusModel is not None}")
                     if JanusModel is None:
                         raise ImportError("JanusModel is not available")
+                    
+                    # Show downloading notification to the user
+                    messagebox.showinfo(
+                        "Model Download",
+                        "The Janus model will be downloaded if not available locally.\n\n"
+                        "This may take a few minutes on the first run. Please be patient."
+                    )
                     model = JanusModel()
+                    
                 elif model_name.lower() == "qwen":
                     logger.info(f"QwenModel class available: {QwenModel is not None}")
                     if QwenModel is None:
@@ -321,14 +391,31 @@ class ModelManager:
                         try:
                             logger.info("Last attempt to import QwenModel...")
                             from models.qwen_model import QwenModel as DirectQwenModel
+                            
+                            # Show downloading notification to the user
+                            messagebox.showinfo(
+                                "Model Download",
+                                "The Qwen2.5-VL model will be downloaded if not available locally.\n\n"
+                                "This may take a few minutes on the first run. Please be patient."
+                            )
                             model = DirectQwenModel()
+                            
                             # If successful, cache the class for future use
                             globals()['QwenModel'] = DirectQwenModel
+                            self.models[model_name] = model
                             return model
                         except Exception as last_error:
                             logger.error(f"Final import attempt failed: {str(last_error)}")
                             raise ImportError(f"QwenModel is not available: {str(last_error)}")
+                    
+                    # Show downloading notification to the user
+                    messagebox.showinfo(
+                        "Model Download",
+                        "The Qwen2.5-VL model will be downloaded if not available locally.\n\n"
+                        "This may take a few minutes on the first run. Please be patient."
+                    )
                     model = QwenModel()
+                    
                 else:
                     raise ValueError(f"Unsupported model: {model_name}")
                 
@@ -341,26 +428,39 @@ class ModelManager:
                 # Show appropriate error message based on model
                 if model_name.lower() == "florence2":
                     error_message = (
-                        "Failed to load Florence-2 model. This might be due to PyTorch version issues.\n\n"
-                        "Please update PyTorch:\n"
-                        "pip install --upgrade torch>=2.6.0 torchvision>=0.17.0\n\n"
+                        "Failed to load or download Florence-2 model.\n\n"
+                        "This could be due to:\n"
+                        "1. Network connectivity issues\n"
+                        "2. PyTorch version incompatibility\n\n"
+                        "Solutions:\n"
+                        "- Check your internet connection\n"
+                        "- Ensure you have HuggingFace token set if needed\n"
+                        "- Try running: pip install torch>=2.6.0 torchvision>=0.17.0\n\n"
                         f"Error: {str(model_error)}"
                     )
                 elif model_name.lower() == "janus":
                     error_message = (
-                        "Failed to load Janus model. Please update transformers:\n"
-                        "pip install --upgrade transformers\n"
-                        "or install from source:\n"
-                        "pip install git+https://github.com/huggingface/transformers.git\n\n"
+                        "Failed to load or download Janus model.\n\n"
+                        "This could be due to:\n"
+                        "1. Network connectivity issues\n"
+                        "2. Transformers version incompatibility\n\n"
+                        "Solutions:\n"
+                        "- Check your internet connection\n"
+                        "- Try running: pip install --upgrade transformers accelerate\n"
+                        "- Or install from source: pip install git+https://github.com/huggingface/transformers.git\n\n"
                         f"Error: {str(model_error)}"
                     )
                 elif model_name.lower() == "qwen":
                     error_message = (
-                        "Failed to load Qwen2.5-VL model. Please install requirements:\n"
-                        "pip install --upgrade transformers accelerate\n"
-                        "pip install qwen-vl-utils[decord]==0.0.8\n"
-                        "or install from source:\n"
-                        "pip install git+https://github.com/huggingface/transformers.git\n\n"
+                        "Failed to load or download Qwen2.5-VL model.\n\n"
+                        "This could be due to:\n"
+                        "1. Network connectivity issues\n"
+                        "2. Missing required packages\n\n"
+                        "Solutions:\n"
+                        "- Check your internet connection\n"
+                        "- Try installing with:\n"
+                        "  pip install --upgrade transformers accelerate\n"
+                        "  pip install qwen-vl-utils[decord]==0.0.8\n\n"
                         f"Error: {str(model_error)}"
                     )
                 else:
@@ -383,6 +483,34 @@ class ModelManager:
             logger.error(f"Error initializing model {model_name}: {str(e)}")
             raise
 
+    def check_model_cache(self):
+        """Check if models are already downloaded and cached"""
+        try:
+            # Get the cache directory
+            cache_dir = os.environ.get("TRANSFORMERS_CACHE", None)
+            if not cache_dir:
+                home_dir = Path.home()
+                cache_dir = str(home_dir / ".cache" / "florence2-vision-toolkit" / "transformers")
+                
+            cache_path = Path(cache_dir)
+            if not cache_path.exists():
+                logger.info("No model cache found. Models will be downloaded when first used.")
+                return
+                
+            # Check for model files in cache
+            model_files = list(cache_path.glob("**/model*.safetensors"))
+            if not model_files:
+                model_files = list(cache_path.glob("**/model*.bin"))
+                
+            if model_files:
+                logger.info(f"Found {len(model_files)} model files in cache at {cache_dir}")
+                # We don't need to do anything else here, just log that models exist
+            else:
+                logger.info(f"No model files found in cache at {cache_dir}")
+                
+        except Exception as e:
+            logger.warning(f"Error checking model cache: {str(e)}")
+    
     def get_model(self, model_name: str) -> object:
         """Get a model, initializing if necessary"""
         if self._current_model_name != model_name:
@@ -804,26 +932,158 @@ class ReviewGUI:
             self.status_label.config(text="Next image")
 
     def _on_model_change(self, event):
-        """Handle model switching with error handling"""
+        """Handle model switching with error handling and progress indication"""
         try:
             new_model = self.model_var.get()
             if new_model != self.model_name:
                 logger.info(f"Switching model from {self.model_name} to {new_model}")
                 self.status_label.config(text=f"Switching to {new_model} model...")
+                self.model_label.config(text=f"{new_model} (loading...)")
+                self.root.update()  # Refresh UI to show status
+                
+                # Disable controls during model switching
+                self._set_controls_state(tk.DISABLED)
+                
                 try:
-                    self.model = self.model_manager.get_model(new_model)
-                    self.model_name = new_model
-                    if self.items:
-                        self.show_current()
-                    self.status_label.config(text=f"Switched to {new_model} model")
+                    # Create loading indicator in a separate window
+                    loading_window = tk.Toplevel(self.root)
+                    loading_window.title("Loading Model")
+                    loading_window.geometry("300x150")
+                    loading_window.transient(self.root)
+                    
+                    # Make the loading window modal
+                    loading_window.grab_set()
+                    
+                    # Center loading window over main window
+                    x = self.root.winfo_x() + (self.root.winfo_width() // 2) - 150
+                    y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 75
+                    loading_window.geometry(f"+{x}+{y}")
+                    
+                    # Add loading message
+                    ttk.Label(
+                        loading_window, 
+                        text=f"Loading {new_model} model...",
+                        font=("Segoe UI", 12)
+                    ).pack(pady=20)
+                    
+                    info_text = ttk.Label(
+                        loading_window,
+                        text="This may take a few minutes on first run\nwhen downloading model files from HuggingFace.",
+                        justify=tk.CENTER
+                    )
+                    info_text.pack(pady=10)
+                    
+                    # Add indeterminate progress bar
+                    progress = ttk.Progressbar(
+                        loading_window,
+                        mode='indeterminate',
+                        length=200
+                    )
+                    progress.pack(pady=10)
+                    progress.start(10)  # Start animation
+                    
+                    # Need to update the window to make it visible during loading
+                    loading_window.update()
+                    
+                    # Handle model loading in a separate thread
+                    import threading
+                    import queue
+                    
+                    result_queue = queue.Queue()
+                    
+                    def load_model_thread():
+                        try:
+                            model = self.model_manager.get_model(new_model)
+                            result_queue.put(("success", model))
+                        except Exception as e:
+                            result_queue.put(("error", e))
+                    
+                    # Start loading thread
+                    loading_thread = threading.Thread(target=load_model_thread)
+                    loading_thread.daemon = True
+                    loading_thread.start()
+                    
+                    # Check queue every 100ms
+                    def check_result():
+                        if not loading_thread.is_alive() or not result_queue.empty():
+                            try:
+                                result_type, result_data = result_queue.get_nowait()
+                                
+                                # Close loading window
+                                loading_window.destroy()
+                                
+                                if result_type == "success":
+                                    self.model = result_data
+                                    self.model_name = new_model
+                                    self.model_label.config(text=new_model)
+                                    
+                                    # Re-enable controls
+                                    self._set_controls_state(tk.NORMAL)
+                                    
+                                    if self.items:
+                                        self.show_current()
+                                    self.status_label.config(text=f"Switched to {new_model} model")
+                                else:
+                                    # There was an error
+                                    error = result_data
+                                    logger.error(f"Failed to switch to model {new_model}: {str(error)}")
+                                    messagebox.showerror("Error", f"Failed to switch to {new_model}. Reverting to previous model.\n\nError: {str(error)}")
+                                    self.model_var.set(self.model_name)
+                                    self.model_label.config(text=self.model_name)
+                                    self.status_label.config(text=f"Error switching model")
+                                    
+                                    # Re-enable controls
+                                    self._set_controls_state(tk.NORMAL)
+                            except queue.Empty:
+                                # Check again
+                                self.root.after(100, check_result)
+                        else:
+                            # Thread still running, check again
+                            self.root.after(100, check_result)
+                    
+                    # Start checking for result
+                    self.root.after(100, check_result)
+                    
                 except Exception as e:
-                    logger.error(f"Failed to switch to model {new_model}: {str(e)}")
-                    messagebox.showerror("Error", f"Failed to switch to {new_model}. Reverting to previous model.")
-                    self.model_var.set(self.model_name)
-                    self.status_label.config(text=f"Error switching model")
+                    # If there's an error creating loading window
+                    logger.error(f"Failed to create loading window: {str(e)}")
+                    try:
+                        self.model = self.model_manager.get_model(new_model)
+                        self.model_name = new_model
+                        self.model_label.config(text=new_model)
+                        if self.items:
+                            self.show_current()
+                        self.status_label.config(text=f"Switched to {new_model} model")
+                    except Exception as model_error:
+                        logger.error(f"Failed to switch to model {new_model}: {str(model_error)}")
+                        messagebox.showerror("Error", f"Failed to switch to {new_model}. Reverting to previous model.")
+                        self.model_var.set(self.model_name)
+                        self.model_label.config(text=self.model_name)
+                        self.status_label.config(text=f"Error switching model")
+                    finally:
+                        # Re-enable controls
+                        self._set_controls_state(tk.NORMAL)
         except Exception as e:
             logger.error(f"Error in model change handler: {str(e)}")
+            # Re-enable controls if there was an error
+            self._set_controls_state(tk.NORMAL)
             raise
+            
+    def _set_controls_state(self, state):
+        """Enable or disable UI controls during model loading"""
+        try:
+            # Disable/enable navigation buttons
+            self.prev_btn.config(state=state)
+            self.next_btn.config(state=state)
+            
+            # Disable/enable action buttons
+            self.approve_btn.config(state=state)
+            self.reject_btn.config(state=state)
+            
+            # Disable/enable save button
+            self.save_caption_btn.config(state=state)
+        except Exception as e:
+            logger.error(f"Error setting control states: {str(e)}")
 
     def _on_quality_change(self, event):
         """Handle quality selection change"""
@@ -983,16 +1243,32 @@ class ReviewGUI:
                     logger.info(f"Using cached analysis for {img_path}")
                     description, clean_caption = self.image_cache[str(img_path)]
                 else:
-                    # Analyze the image
-                    self.status_label.config(text="Analyzing image...")
-                    description, clean_caption = self.model.analyze_image(str(img_path))
-                    # Cache the result
-                    self.image_cache[str(img_path)] = (description, clean_caption)
+                    # Show status during analysis
+                    self.status_label.config(text=f"Analyzing image with {self.model_name} model...")
+                    self.root.update()  # Refresh UI to show status
+                    
+                    try:
+                        # Update model label to show which one is being used
+                        self.model_label.config(text=f"{self.model_name} (analyzing...)")
+                        self.root.update()  # Refresh UI to show status
+                        
+                        # Analyze the image
+                        description, clean_caption = self.model.analyze_image(str(img_path))
+                        
+                        # Update UI to show success
+                        self.model_label.config(text=self.model_name)
+                        
+                        # Cache the result
+                        self.image_cache[str(img_path)] = (description, clean_caption)
+                    except Exception as analyze_error:
+                        # Update model label to show error
+                        self.model_label.config(text=f"{self.model_name} (error)")
+                        raise analyze_error
                     
                 self.status_label.config(text="Analysis complete")
             except Exception as e:
                 logger.error(f"Error analyzing image: {str(e)}")
-                description = "Error analyzing image"
+                description = f"Error analyzing image with {self.model_name} model:\n\n{str(e)}"
                 clean_caption = None
                 self.status_label.config(text=f"Error analyzing image")
                 messagebox.showwarning("Warning", f"Error analyzing image: {str(e)}")

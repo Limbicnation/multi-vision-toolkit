@@ -17,6 +17,7 @@
 - **Batch Processing**: Process multiple images at once with progress tracking
 - **Export Functionality**: Export analysis results to CSV or JSON formats
 - **Image Caching**: Faster navigation with preloading and caching of image analyses
+- **Auto-download Models**: Models are automatically downloaded when needed and cached for future use
 
 ## 🛠️ Installation
 
@@ -96,6 +97,24 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 - **Image Errors**: Verify image format and permissions
 - **Qwen Model Errors**: Make sure to install `transformers` from GitHub and `qwen-vl-utils` with the [decord] feature
 - **KeyError: 'qwen2_5_vl'**: Update transformers with `pip install git+https://github.com/huggingface/transformers.git`
+- **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
+
+### Setting Up HuggingFace Token
+
+For some models (especially newer Florence-2 models), you may need a HuggingFace token:
+
+1. Create an account at [HuggingFace.co](https://huggingface.co)
+2. Go to Settings -> Access Tokens
+3. Create a new token with at least "read" access
+4. Create a `.env` file in the root directory of this project (see `.env.example` for a template)
+5. Add your token: `HF_TOKEN=your_token_here`
+
+Models are downloaded and cached automatically when you use them for the first time. Downloaded models are stored in a persistent cache at:
+- Windows: `C:\Users\<username>\.cache\florence2-vision-toolkit\`
+- Linux: `~/.cache/florence2-vision-toolkit/`
+- macOS: `~/Library/Caches/florence2-vision-toolkit/`
+
+You can customize the cache location by setting the `TRANSFORMERS_CACHE` environment variable in your `.env` file.
 
 ### Common Error: CVE-2025-32434 Vulnerability
 

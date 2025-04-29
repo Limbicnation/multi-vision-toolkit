@@ -66,14 +66,16 @@ class QwenModel(BaseVisionModel):
                     self.model_path,
                     torch_dtype=torch.float16,  # Using float16 instead of auto
                     device_map="auto",
-                    trust_remote_code=True  # Critical parameter
+                    trust_remote_code=True,  # Critical parameter
+                    local_files_only=False    # Allow downloading if not available locally
                 )
                 logger.info("Successfully loaded Qwen2.5-VL model")
                 
                 # Load processor with trust_remote_code
                 self.processor = AutoProcessor.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=False  # Allow downloading if not available locally
                 )
                 logger.info("Successfully loaded Qwen2.5-VL processor")
             except Exception as e:
