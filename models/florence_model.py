@@ -72,7 +72,14 @@ class Florence2Model(BaseVisionModel):
             import torch
             
             logger.info("Loading Florence-2 model...")
-            model_path = "microsoft/Florence-2-large"
+            # Try local path first, then fall back to HuggingFace
+            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Florence-2-base")
+            if os.path.exists(local_path):
+                model_path = local_path
+                logger.info(f"Using local model: {model_path}")
+            else:
+                model_path = "microsoft/Florence-2-base"
+                logger.info(f"Using remote model: {model_path}")
             
             # Check PyTorch version for vulnerability warning
             torch_version = torch.__version__

@@ -20,14 +20,26 @@ class QwenModel(BaseVisionModel):
         'qwen_vl_utils': 'qwen-vl-utils[decord]==0.0.8'
     }
 
-    def __init__(self, model_path: str = "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"):
+    def __init__(self, model_path: str = None):
         """
         Initialize the Qwen2.5-VL-3B-Instruct-AWQ model.
         
         Args:
             model_path (str): HuggingFace model path
         """
-        self.model_path = model_path
+        # Try local path first, then fall back to HuggingFace
+        if model_path is None:
+            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Qwen2.5-VL-3B-Instruct-AWQ")
+            if os.path.exists(local_path):
+                self.model_path = local_path
+                logger.info(f"Using local model: {self.model_path}")
+            else:
+                self.model_path = "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"
+                logger.info(f"Using remote model: {self.model_path}")
+        else:
+            self.model_path = model_path
+            logger.info(f"Using specified model: {self.model_path}")
+            
         self._check_dependencies()
         super().__init__()
 

@@ -16,14 +16,26 @@ class JanusModel(BaseVisionModel):
     This is a publicly available model that doesn't require authentication.
     """
     
-    def __init__(self, model_path: str = "Salesforce/blip-image-captioning-large"):
+    def __init__(self, model_path: str = None):
         """
         Initialize the model.
         
         Args:
             model_path (str): HuggingFace model path
         """
-        self.model_path = model_path
+        # Try local path first, then fall back to HuggingFace
+        if model_path is None:
+            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "blip-image-captioning-base")
+            if os.path.exists(local_path):
+                self.model_path = local_path
+                logger.info(f"Using local model: {self.model_path}")
+            else:
+                self.model_path = "Salesforce/blip-image-captioning-base"
+                logger.info(f"Using remote model: {self.model_path}")
+        else:
+            self.model_path = model_path
+            logger.info(f"Using specified model: {self.model_path}")
+        
         super().__init__()
 
     def _setup_model(self) -> None:
