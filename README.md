@@ -13,7 +13,7 @@
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
 - **Quality Controls**: Generate captions in standard, detailed, or creative modes
-- **Drag and Drop**: Easily process images by dragging them directly into the application
+- **Drag and Drop**: Easily process images or entire folders by dragging them directly into the application
 - **Batch Processing**: Process multiple images at once with progress tracking
 - **Export Functionality**: Export analysis results to CSV or JSON formats
 - **Image Caching**: Faster navigation with preloading and caching of image analyses
@@ -70,7 +70,7 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 - **Metadata Tracking**: Auto-generated JSON and text files
 - **Caption Quality Settings**: Choose between standard, detailed, and creative captions
 - **Light/Dark Mode**: Theme toggle for comfortable viewing
-- **Drag and Drop Support**: Drag images directly into the app for processing
+- **Drag and Drop Support**: Drag images or folders directly into the app for processing (recursively scans folders for supported images)
 - **Batch Processing**: Process multiple images simultaneously with a progress indicator
 - **Export Options**: Export results as CSV or JSON for external use
 - **Quick Navigation**: Fast browsing with image caching and preloading
@@ -83,21 +83,24 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 
 ### Model Capabilities
 
-| Model | Capabilities | VRAM Requirements |
-|-------|-------------|-------------------|
-| Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ |
-| Florence-2 (base) | Same as large with lower accuracy | 4-8GB |
-| BLIP/Janus | High-quality image captioning | 4GB+ |
-| Qwen2.5-VL-3B-Instruct-AWQ | High-quality multimodal captioning with AWQ optimization | 8GB+ |
+| Model | Capabilities | VRAM Requirements | Fallback |
+|-------|-------------|-------------------|----------|
+| Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
+| Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
+| BLIP/Janus | High-quality image captioning | 4GB+ | Dummy model |
+| Qwen2.5-VL-3B-Instruct-AWQ | High-quality multimodal captioning with AWQ optimization | 8GB+ | CLIP model |
+
+Each model has a fallback mechanism if the primary model fails to load. The Qwen model specifically falls back to a CLIP-based implementation that provides basic image classification and captioning.
 
 ## 🔧 Troubleshooting
 
 - **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes
 - **Model Loading**: Update transformers with `pip install --upgrade transformers` or clear cache
 - **Image Errors**: Verify image format and permissions
-- **Qwen Model Errors**: Make sure to install `transformers` from GitHub and `qwen-vl-utils` with the [decord] feature
+- **Qwen Model Errors**: Make sure to install `transformers` from GitHub and `qwen-vl-utils` with the [decord] feature. If the Qwen model fails to load, the application will automatically fall back to using CLIP for basic image classification.
 - **KeyError: 'qwen2_5_vl'**: Update transformers with `pip install git+https://github.com/huggingface/transformers.git`
 - **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
+- **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.
 
 ### Setting Up HuggingFace Token
 
