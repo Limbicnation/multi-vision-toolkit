@@ -6,6 +6,15 @@ import torch
 import importlib
 from PIL import Image
 import os
+import sys
+
+# Handle potential circular import with torchvision
+try:
+    # Try to import torchvision directly
+    import torchvision
+except (ImportError, AttributeError) as e:
+    logging.warning(f"Issue with torchvision import: {str(e)}")
+    # If there's a circular import issue, we'll fix it later in the model setup
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +26,7 @@ class Florence2Model(BaseVisionModel):
         'timm': 'timm',
         'einops': 'einops',
         'torch': 'torch',
+        'torchvision': 'torchvision>=0.17.0',
         'PIL': 'Pillow'
     }
 
@@ -31,7 +41,18 @@ class Florence2Model(BaseVisionModel):
         missing_packages = []
         for package, pip_name in cls.REQUIRED_PACKAGES.items():
             try:
-                importlib.import_module(package)
+                # Special handling for torchvision due to potential circular import
+                if package == 'torchvision':
+                    try:
+                        import torchvision
+                        # Verify we can access a specific attribute to confirm proper import
+                        # This will catch circular import issues
+                        version = torchvision.__version__
+                    except (ImportError, AttributeError) as e:
+                        logger.warning(f"Issue with torchvision: {str(e)}")
+                        missing_packages.append((package, pip_name))
+                else:
+                    importlib.import_module(package)
             except ImportError:
                 missing_packages.append((package, pip_name))
 
@@ -48,25 +69,96 @@ class Florence2Model(BaseVisionModel):
         """Set up the Florence-2 model following official implementation."""
         try:
             from transformers import AutoProcessor, AutoModelForCausalLM
+            import torch
             
             logger.info("Loading Florence-2 model...")
-            model_path = "microsoft/Florence-2-large"
+            # Try local path first, then fall back to HuggingFace
+            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Florence-2-base")
+            if os.path.exists(local_path):
+                model_path = local_path
+                logger.info(f"Using local model: {model_path}")
+            else:
+                model_path = "microsoft/Florence-2-base"
+                logger.info(f"Using remote model: {model_path}")
             
-            # Initialize model without device_map for proper loading
+            # Check PyTorch version for vulnerability warning
+            torch_version = torch.__version__
+            required_version = "2.6.0"
+            
+            # Try to parse versions for comparison
             try:
+                torch_ver_parts = torch_version.split('.')
+                required_ver_parts = required_version.split('.')
+                
+                version_too_old = False
+                for i in range(min(len(torch_ver_parts), len(required_ver_parts))):
+                    if int(torch_ver_parts[i]) < int(required_ver_parts[i]):
+                        version_too_old = True
+                        break
+                    elif int(torch_ver_parts[i]) > int(required_ver_parts[i]):
+                        break
+                
+                if version_too_old:
+                    logger.warning(f"Your PyTorch version ({torch_version}) is older than the recommended minimum ({required_version})")
+                    logger.warning("You may encounter security warnings or errors with torch.load")
+                    logger.warning("Consider upgrading: pip install torch>=2.6.0 torchvision>=0.17.0")
+            except Exception:
+                # If parsing failed, just continue
+                pass
+            
+            # Initialize model with added error handling for timm issues
+            try:
+                # Replace timm import in globals to prevent circular imports later
+                try:
+                    import sys
+                    if 'timm.models.layers' in sys.modules:
+                        logger.warning("Detected potential problematic timm import. Attempting workaround...")
+                        import timm.layers
+                        sys.modules['timm.models.layers'] = timm.layers
+                except Exception as timm_error:
+                    logger.warning(f"Timm import fix failed (non-critical): {str(timm_error)}")
+                
+                logger.info("Attempting to load model with safetensors...")
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_path,
                     torch_dtype=self.torch_dtype,
-                    trust_remote_code=True
-                ).to(self.device)  # Move to device after initialization
+                    trust_remote_code=True,
+                    use_safetensors=True,
+                    low_cpu_mem_usage=True,
+                    device_map="auto",
+                    revision="main",  # Explicitly use main branch
+                    local_files_only=False  # Allow downloading if not available locally
+                )
             except Exception as e:
-                logger.error(f"Failed to load model: {str(e)}")
-                raise RuntimeError("Model initialization failed") from e
+                logger.warning(f"Failed to load with safetensors: {str(e)}")
+                logger.info("Attempting to load with standard method...")
+                
+                try:
+                    # Fallback to standard loading with explicit device
+                    self.model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        torch_dtype=self.torch_dtype,
+                        trust_remote_code=True,
+                        low_cpu_mem_usage=True,
+                        local_files_only=False,  # Force download if needed
+                        revision="main"  # Explicitly use main branch
+                    ).to(self.device)
+                except Exception as load_error:
+                    logger.error(f"Failed to load model: {str(load_error)}")
+                    error_message = (
+                        f"Model loading failed. This may be due to a PyTorch security restriction or timm compatibility issue.\n"
+                        f"Try installing the exact required versions:\n"
+                        f"pip install torch==2.6.0 torchvision==0.17.0 timm==0.9.12\n\n"
+                        f"Original error: {str(load_error)}"
+                    )
+                    raise RuntimeError("Model initialization failed") from load_error
 
+            # Load processor (less likely to have issues)
             try:
                 self.processor = AutoProcessor.from_pretrained(
                     model_path,
-                    trust_remote_code=True
+                    trust_remote_code=True,
+                    local_files_only=False  # Allow downloading if not available locally
                 )
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")
@@ -168,7 +260,24 @@ class Florence2Model(BaseVisionModel):
     def is_available(cls) -> bool:
         """Check if the model can be initialized with current environment."""
         try:
-            cls._check_dependencies()
-            return True
-        except Exception:
+            # Check for required dependencies except timm which might have issues
+            import torch
+            import transformers
+            
+            # Test a direct import from transformers for the necessary classes
+            try:
+                from transformers import AutoProcessor, AutoModelForCausalLM
+                has_transformers = True
+            except ImportError:
+                logger.error("Required transformers classes not found. Please update transformers.")
+                has_transformers = False
+                
+            # Check CUDA availability
+            has_cuda = torch.cuda.is_available()
+            if not has_cuda:
+                logger.warning("CUDA not available. Model will run in CPU mode with greatly reduced performance.")
+                
+            return has_transformers
+        except Exception as e:
+            logger.error(f"Failed to check model availability: {str(e)}")
             return False

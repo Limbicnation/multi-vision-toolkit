@@ -16,14 +16,26 @@ class JanusModel(BaseVisionModel):
     This is a publicly available model that doesn't require authentication.
     """
     
-    def __init__(self, model_path: str = "Salesforce/blip-image-captioning-large"):
+    def __init__(self, model_path: str = None):
         """
         Initialize the model.
         
         Args:
             model_path (str): HuggingFace model path
         """
-        self.model_path = model_path
+        # Try local path first, then fall back to HuggingFace
+        if model_path is None:
+            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "blip-image-captioning-base")
+            if os.path.exists(local_path):
+                self.model_path = local_path
+                logger.info(f"Using local model: {self.model_path}")
+            else:
+                self.model_path = "Salesforce/blip-image-captioning-base"
+                logger.info(f"Using remote model: {self.model_path}")
+        else:
+            self.model_path = model_path
+            logger.info(f"Using specified model: {self.model_path}")
+        
         super().__init__()
 
     def _setup_model(self) -> None:
@@ -32,7 +44,11 @@ class JanusModel(BaseVisionModel):
             logger.info(f"Loading model from {self.model_path}...")
             
             try:
-                self.processor = BlipProcessor.from_pretrained(self.model_path)
+                self.processor = BlipProcessor.from_pretrained(
+                    self.model_path,
+                    trust_remote_code=True,  # Add trust_remote_code
+                    local_files_only=False  # Allow downloading if not available locally
+                )
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")
                 raise RuntimeError("Processor initialization failed") from e
@@ -40,7 +56,10 @@ class JanusModel(BaseVisionModel):
             try:
                 self.model = BlipForConditionalGeneration.from_pretrained(
                     self.model_path,
-                    torch_dtype=self.torch_dtype
+                    torch_dtype=self.torch_dtype,
+                    trust_remote_code=True,  # Add trust_remote_code
+                    revision="main",         # Explicitly use main branch
+                    local_files_only=False   # Allow downloading if not available locally
                 ).to(self.device)
             except Exception as e:
                 logger.error(f"Failed to load model: {str(e)}")
