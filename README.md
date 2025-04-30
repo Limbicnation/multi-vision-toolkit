@@ -31,10 +31,9 @@ conda create -n vision-env python=3.11
 conda activate vision-env
 
 # Install PyTorch with CUDA support (version 2.6.0+ required to address CVE-2025-32434)
-conda install pytorch=2.6.0 torchvision=0.17.0 pytorch-cuda=12.1 -c pytorch -c nvidia
+conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia
 # OR use pip:
-pip install torch>=2.6.0 torchvision>=0.17.0 --extra-index-url https://download.pytorch.org/whl/cu121
-
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 # Install core dependencies
 pip install -r requirements.txt
 
