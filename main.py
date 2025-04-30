@@ -523,12 +523,22 @@ class DatasetPreparator:
     def __init__(self):
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.JPG', '.JPEG', '.PNG'}
         
-    def is_supported_image(self, filename: str) -> bool:
-        return Path(filename).suffix.lower() in self.supported_formats
+    def is_supported_image(self, path) -> bool:
+        """Check if a file is a supported image type"""
+        path_obj = Path(path)
+        
+        # Check if path exists and is a file (not a directory)
+        if path_obj.exists() and not path_obj.is_file():
+            return False
+            
+        return path_obj.suffix.lower() in {'.jpg', '.jpeg', '.png'}
         
     def create_caption_file(self, image_path: str, caption: str) -> str:
+        """Create a caption text file for the given image"""
         try:
             txt_path = Path(image_path).with_suffix('.txt')
+            # Ensure parent directory exists
+            txt_path.parent.mkdir(parents=True, exist_ok=True)
             txt_path.write_text(caption, encoding='utf-8')
             return str(txt_path)
         except Exception as e:
@@ -1483,6 +1493,8 @@ class ReviewGUI:
                 
             # Filter for supported image formats
             valid_images = []
+            directories_scanned = 0
+            
             for file_path in file_list:
                 # Clean up path (may include unwanted characters)
                 file_path = file_path.strip()
@@ -1490,20 +1502,33 @@ class ReviewGUI:
                     file_path = file_path[1:-1]
                 
                 path_obj = Path(file_path)
-                if self.dataset_prep.is_supported_image(path_obj):
+                
+                # Check if it's a directory
+                if path_obj.is_dir():
+                    directories_scanned += 1
+                    # Recursively scan the directory for supported image files
+                    for img_file in path_obj.glob('**/*'):
+                        if self.dataset_prep.is_supported_image(img_file):
+                            valid_images.append(img_file)
+                elif self.dataset_prep.is_supported_image(path_obj):
                     valid_images.append(path_obj)
             
             if not valid_images:
-                messagebox.showinfo("Info", "No valid image files were dropped. Supported formats: .jpg, .jpeg, .png")
+                messagebox.showinfo("Info", "No valid image files were found. Supported formats: .jpg, .jpeg, .png\n\nYou can drop individual images or folders containing images.")
                 return
                 
             # Ask user what to do with the images
+            message = f"{len(valid_images)} image(s) found"
+            if directories_scanned > 0:
+                message += f" in {directories_scanned} folder(s)"
+            message += ". Do you want to:\n\n"
+            message += "Yes: Copy to review directory\n"
+            message += "No: Process in place\n"
+            message += "Cancel: Ignore dropped files"
+            
             action = messagebox.askyesnocancel(
                 "Process Dropped Images", 
-                f"{len(valid_images)} image(s) dropped. Do you want to:\n\n"
-                f"Yes: Copy to review directory\n"
-                f"No: Process in place\n"
-                f"Cancel: Ignore dropped files"
+                message
             )
             
             if action is None:  # Cancel
@@ -1517,7 +1542,11 @@ class ReviewGUI:
                 
                 # Reload items
                 self.load_items()
-                self.status_label.config(text=f"Added {len(valid_images)} image(s) to review directory")
+                
+                status_message = f"Added {len(valid_images)} image(s) to review directory"
+                if directories_scanned > 0:
+                    status_message += f" from {directories_scanned} folder(s)"
+                self.status_label.config(text=status_message)
             else:  # No - process in place
                 # Create a temporary list of items
                 temp_items = []
@@ -1546,7 +1575,11 @@ class ReviewGUI:
                     self.items = temp_items + self.items
                     self.current = 0
                     self.show_current()
-                    self.status_label.config(text=f"Added {len(valid_images)} image(s) for review")
+                    
+                    status_message = f"Added {len(valid_images)} image(s) for review"
+                    if directories_scanned > 0:
+                        status_message += f" from {directories_scanned} folder(s)"
+                    self.status_label.config(text=status_message)
                 
         except Exception as e:
             logger.error(f"Error handling dropped files: {str(e)}")
