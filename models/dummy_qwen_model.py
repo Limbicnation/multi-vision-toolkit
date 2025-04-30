@@ -33,8 +33,23 @@ class QwenModel(BaseVisionModel):
             import torch
             
             logger.info("Using CLIP model as a Qwen model fallback")
-            model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-            processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+            
+            # Configure cache
+            cache_options = {}
+            if "TRANSFORMERS_CACHE" in os.environ:
+                cache_options["cache_dir"] = os.environ["TRANSFORMERS_CACHE"]
+                
+            # Set device and dtype
+            device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+            
+            # Load model with proper device configuration
+            model = CLIPModel.from_pretrained(
+                "openai/clip-vit-base-patch32", 
+                torch_dtype=dtype,
+                **cache_options
+            )
+            processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32", **cache_options)
             
             # Load and process image
             from PIL import Image
@@ -45,6 +60,9 @@ class QwenModel(BaseVisionModel):
             # Get device
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
             
+            # Move model to the same device
+            model = model.to(device)
+            
             # Prepare inputs
             inputs = processor(
                 text=["a photo of a landscape", "a portrait", "a photo of food", 
@@ -52,7 +70,10 @@ class QwenModel(BaseVisionModel):
                 images=image,
                 return_tensors="pt",
                 padding=True
-            ).to(device)
+            )
+            
+            # Move inputs to the same device as model
+            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
             
             # Get prediction
             with torch.inference_mode():
@@ -60,6 +81,11 @@ class QwenModel(BaseVisionModel):
                 
             # Get the image-text similarity scores
             logits_per_image = outputs.logits_per_image
+            
+            # Move to CPU before converting to Python objects
+            if device != "cpu":
+                logits_per_image = logits_per_image.cpu()
+                
             probs = logits_per_image.softmax(dim=1).tolist()[0]
             
             # Get the most likely category
