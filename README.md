@@ -23,23 +23,36 @@
 
 ### Prerequisites
 - Python 3.11
-- CUDA-capable GPU recommended (8GB VRAM for Florence-2, 4GB for BLIP, 8GB+ for Qwen2.5-VL)
+- CUDA-capable GPU recommended (Check VRAM requirements below)
 
 ```bash
 # Create conda environment
 conda create -n vision-env python=3.11
 conda activate vision-env
 
-# Install PyTorch with CUDA support (version 2.6.0+ required to address CVE-2025-32434)
-conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia
-# OR use pip:
+# Install PyTorch (v2.6+ recommended for compatibility and security)
+# Option 1: Using pip (Recommended for latest versions like 2.6+)
+# Replace cu124 with your CUDA version (e.g., cu118, cpu) if needed
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+
+# Option 2: Using conda (May have slightly older versions)
+# Replace pytorch-cuda=12.4 with your CUDA version (e.g., 11.8) or remove for CPU
+# conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia
+
 # Install core dependencies
 pip install -r requirements.txt
 
-# For Qwen2.5-VL, you may need to install from source
-pip install git+https://github.com/huggingface/transformers.git
-pip install qwen-vl-utils[decord]==0.0.8
+# Additional steps for specific models:
+
+# For Qwen2.5-VL:
+# Install/Upgrade transformers (latest recommended for Qwen support)
+pip install --upgrade git+https://github.com/huggingface/transformers.git
+# Install qwen utilities and ensure autoawq is up-to-date for AWQ models
+pip install qwen-vl-utils[decord]==0.0.8 "autoawq>=0.1.8"
+
+# For Florence-2 (if encountering issues):
+# Ensure timm is up-to-date
+# pip install --upgrade timm
 ```
 
 ## 📁 Quick Start
