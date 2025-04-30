@@ -67,7 +67,7 @@ class QwenModel(BaseVisionModel):
         """Set up the Qwen2.5-VL model with fallback options."""
         try:
             # Using the specific implementation suggested
-            from transformers import AutoModel, AutoTokenizer, AutoProcessor, AutoModelForCausalLM
+            from transformers import AutoTokenizer, AutoProcessor
             from qwen_vl_utils import process_vision_info
             
             logger.info(f"Loading Qwen2.5-VL model from {self.model_path}...")
@@ -76,8 +76,8 @@ class QwenModel(BaseVisionModel):
             is_awq_model = "AWQ" in self.model_path or "awq" in self.model_path
             
             try:
-                # First attempt: Try with more generic AutoModelForCausalLM
-                logger.info("Trying to load with AutoModelForCausalLM...")
+                # First attempt: Try with specific Qwen2_5_VLForConditionalGeneration class
+                logger.info("Trying to load with Qwen2_5_VLForConditionalGeneration...")
                 model_kwargs = {
                     "torch_dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
                     "device_map": "auto",
@@ -93,7 +93,7 @@ class QwenModel(BaseVisionModel):
                     except (ImportError, Exception) as qe:
                         logger.warning(f"Could not set up AWQ config: {str(qe)}")
                 
-                self.model = AutoModelForCausalLM.from_pretrained(
+                self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     self.model_path,
                     **model_kwargs
                 )
@@ -122,7 +122,7 @@ class QwenModel(BaseVisionModel):
                         
                         logger.info(f"Trying alternative model: {alternative_model_path}")
                         
-                        self.model = AutoModelForCausalLM.from_pretrained(
+                        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                             alternative_model_path,
                             torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                             device_map="auto",
@@ -364,11 +364,16 @@ class QwenModel(BaseVisionModel):
             logger.info("Using CLIP fallback for image analysis")
             
             # If we don't have a CLIP model already loaded, get one
-            if not hasattr(self, 'model') or self.model is None:
+            if not hasattr(self, 'model') or self.model is None or not isinstance(self.model, CLIPModel): # Check if it's actually a CLIP model
                 from transformers import CLIPProcessor, CLIPModel
-                self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-                self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-                
+                fallback_model_id = "openai/clip-vit-base-patch32"
+                logger.info(f"Loading fallback CLIP model: {fallback_model_id}")
+                self.model = CLIPModel.from_pretrained(fallback_model_id)
+                self.processor = CLIPProcessor.from_pretrained(fallback_model_id)
+                # Move the fallback model to the correct device
+                self.model.to(self.device) 
+                logger.info(f"CLIP model moved to device: {self.device}")
+            
             # Prepare image with processor
             inputs = self.processor(
                 text=["a photo of a landscape", "a portrait", "a photo of food", 
@@ -376,7 +381,7 @@ class QwenModel(BaseVisionModel):
                 images=image,
                 return_tensors="pt",
                 padding=True
-            ).to(self.device)
+            ).to(self.device) # Ensure inputs are also on the correct device
             
             # Get prediction
             with torch.inference_mode():
