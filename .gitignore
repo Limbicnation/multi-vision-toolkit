@@ -1,6 +1,8 @@
 # Data and model directories
 data/
 models/cache/
+gemini-env/
+models/weights
 
 # Image and JSON files
 *.png
