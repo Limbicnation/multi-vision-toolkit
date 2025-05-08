@@ -169,21 +169,32 @@ class Florence2Model(BaseVisionModel):
                 
                 # Handle timm import issues which are common with Florence models
                 try:
-                    # Try to safely import timm and handle possible restructuring in different versions
+                    # Import timm explicitly if not already imported
                     if 'timm' not in sys.modules:
                         logger.info("Importing timm explicitly")
                         import timm
                     
-                    # Fix for circular dependencies in some timm versions
-                    if 'timm.models.layers' in sys.modules and 'timm.layers' in sys.modules:
-                        logger.info("Detected potential problematic timm import. Applying workaround...")
+                    # Original critical fix - this is what actually makes Florence-2 work
+                    if 'timm.models.layers' in sys.modules:
+                        logger.warning("Detected potential problematic timm import. Attempting workaround...")
+                        import timm.layers
+                        # This is the key line - directly replace the module in sys.modules
+                        sys.modules['timm.models.layers'] = timm.layers
+                    
+                    # Additional fixes for different timm versions
+                    elif 'timm.models.layers' in sys.modules and 'timm.layers' in sys.modules:
+                        logger.info("Detected both timm modules. Applying circular import workaround...")
                         sys.modules['timm.models.layers'] = sys.modules['timm.layers']
                     
                     # Alternative import approach for newer timm versions
-                    if 'timm.models.layers' in sys.modules and 'timm.layers' not in sys.modules:
+                    elif 'timm.models.layers' not in sys.modules:
                         logger.info("Using alternative timm import pattern")
-                        import timm.models.layers
-                        sys.modules['timm.layers'] = timm.models.layers
+                        try:
+                            import timm.models.layers
+                        except ImportError:
+                            # If that direct import fails, try creating it
+                            import timm.layers
+                            sys.modules['timm.models.layers'] = timm.layers
                 except Exception as timm_error:
                     logger.warning(f"Timm import fix attempts failed (non-critical): {str(timm_error)}")
                     logger.info("Model may still load successfully despite timm import issues")
