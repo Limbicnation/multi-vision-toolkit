@@ -7,14 +7,42 @@ import importlib
 from PIL import Image
 import os
 import sys
+import platform
 
-# Handle potential circular import with torchvision
+# Handle imports in a way that prevents circular dependencies
+# Import only what's needed initially, defer other imports
+import importlib
+import logging
+
+# Safely check for torch/torchvision versions without direct imports
+def _check_installed_version(package_name):
+    try:
+        if importlib.util.find_spec(package_name) is None:
+            return None
+        
+        package = importlib.import_module(package_name)
+        if hasattr(package, '__version__'):
+            return package.__version__
+        return "Unknown version"
+    except Exception as e:
+        logging.warning(f"Error checking {package_name} version: {str(e)}")
+        return None
+
+# Check versions without full imports
+torch_version = _check_installed_version('torch')
+torchvision_version = _check_installed_version('torchvision')
+
+# Log basic version info
+logging.info(f"PyTorch version: {torch_version}")
+logging.info(f"Torchvision version: {torchvision_version}")
+
+# Import torch, but defer torchvision import to when it's actually needed
 try:
-    # Try to import torchvision directly
-    import torchvision
-except (ImportError, AttributeError) as e:
-    logging.warning(f"Issue with torchvision import: {str(e)}")
-    # If there's a circular import issue, we'll fix it later in the model setup
+    import torch
+except ImportError as e:
+    logging.error(f"PyTorch import error: {str(e)}")
+    logging.error("PyTorch is required for all models. Please install it first.")
+    # We don't raise here, as the error will be handled in dependency check
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +112,7 @@ class Florence2Model(BaseVisionModel):
             # Check PyTorch version for vulnerability warning
             torch_version = torch.__version__
             required_version = "2.6.0"
+            required_torchvision = "0.17.0"
             
             # Try to parse versions for comparison
             try:
@@ -100,23 +129,75 @@ class Florence2Model(BaseVisionModel):
                 
                 if version_too_old:
                     logger.warning(f"Your PyTorch version ({torch_version}) is older than the recommended minimum ({required_version})")
-                    logger.warning("You may encounter security warnings or errors with torch.load")
-                    logger.warning("Consider upgrading: pip install torch>=2.6.0 torchvision>=0.17.0")
-            except Exception:
-                # If parsing failed, just continue
-                pass
+                    logger.warning("You may encounter security warnings or errors with torch.load due to CVE-2025-32434")
+                    
+                    # Provide platform-specific update instructions
+                    if sys.platform == "win32":
+                        logger.warning("To update on Windows, run:")
+                        logger.warning("pip install torch==2.6.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu121")
+                    elif sys.platform == "linux":
+                        if "microsoft" in os.uname().release:  # WSL detection
+                            logger.warning("Windows WSL detected. To update, run:")
+                            logger.warning("pip install torch==2.6.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu121")
+                        else:
+                            logger.warning("To update on Linux, run:")
+                            logger.warning("pip install torch==2.6.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu121")
+                    elif sys.platform == "darwin":
+                        # Apple Silicon vs Intel Mac
+                        import platform
+                        if platform.processor() == "arm":
+                            logger.warning("To update on Apple Silicon Mac, run:")
+                            logger.warning("pip install torch==2.6.0 torchvision==0.17.0")
+                        else:
+                            logger.warning("To update on Intel Mac, run:")
+                            logger.warning("pip install torch==2.6.0 torchvision==0.17.0")
+                    else:
+                        logger.warning("Consider upgrading: pip install torch>=2.6.0 torchvision>=0.17.0")
+            except Exception as e:
+                # If parsing failed, log it but continue
+                logger.debug(f"Failed to parse PyTorch version: {str(e)}")
             
-            # Initialize model with added error handling for timm issues
+            # Initialize model with added error handling for dependency issues
             try:
-                # Replace timm import in globals to prevent circular imports later
+                # Check if torchvision is properly imported
+                if 'torchvision' not in sys.modules:
+                    logger.info("Importing torchvision at model initialization time")
+                    try:
+                        import torchvision
+                    except Exception as tv_error:
+                        logger.warning(f"Torchvision import error (non-critical): {str(tv_error)}")
+                
+                # Handle timm import issues which are common with Florence models
                 try:
-                    import sys
+                    # Import timm explicitly if not already imported
+                    if 'timm' not in sys.modules:
+                        logger.info("Importing timm explicitly")
+                        import timm
+                    
+                    # Original critical fix - this is what actually makes Florence-2 work
                     if 'timm.models.layers' in sys.modules:
                         logger.warning("Detected potential problematic timm import. Attempting workaround...")
                         import timm.layers
+                        # This is the key line - directly replace the module in sys.modules
                         sys.modules['timm.models.layers'] = timm.layers
+                    
+                    # Additional fixes for different timm versions
+                    elif 'timm.models.layers' in sys.modules and 'timm.layers' in sys.modules:
+                        logger.info("Detected both timm modules. Applying circular import workaround...")
+                        sys.modules['timm.models.layers'] = sys.modules['timm.layers']
+                    
+                    # Alternative import approach for newer timm versions
+                    elif 'timm.models.layers' not in sys.modules:
+                        logger.info("Using alternative timm import pattern")
+                        try:
+                            import timm.models.layers
+                        except ImportError:
+                            # If that direct import fails, try creating it
+                            import timm.layers
+                            sys.modules['timm.models.layers'] = timm.layers
                 except Exception as timm_error:
-                    logger.warning(f"Timm import fix failed (non-critical): {str(timm_error)}")
+                    logger.warning(f"Timm import fix attempts failed (non-critical): {str(timm_error)}")
+                    logger.info("Model may still load successfully despite timm import issues")
                 
                 logger.info("Attempting to load model with safetensors...")
                 self.model = AutoModelForCausalLM.from_pretrained(
@@ -145,10 +226,36 @@ class Florence2Model(BaseVisionModel):
                     ).to(self.device)
                 except Exception as load_error:
                     logger.error(f"Failed to load model: {str(load_error)}")
+                    
+                    # Provide detailed installation instructions based on common error types
+                    error_str = str(load_error).lower()
+                    
+                    if "safetensors" in error_str:
+                        extra_package = "pip install safetensors"
+                    elif "timm" in error_str:
+                        extra_package = "pip install timm==0.9.12"
+                    elif "einops" in error_str:
+                        extra_package = "pip install einops"
+                    else:
+                        extra_package = "pip install timm==0.9.12 safetensors einops"
+                    
+                    # Platform-specific installation commands
+                    if sys.platform == "win32" or ("microsoft" in os.uname().release and sys.platform == "linux"):
+                        # Windows or WSL
+                        torch_install = "pip install torch==2.6.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu121"
+                    elif sys.platform == "darwin" and platform.processor() == "arm":
+                        # Apple Silicon
+                        torch_install = "pip install torch==2.6.0 torchvision==0.17.0"
+                    else:
+                        # Linux or other
+                        torch_install = "pip install torch==2.6.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu121"
+                    
                     error_message = (
-                        f"Model loading failed. This may be due to a PyTorch security restriction or timm compatibility issue.\n"
+                        f"Model loading failed. This may be due to a PyTorch security restriction or dependency issue.\n\n"
                         f"Try installing the exact required versions:\n"
-                        f"pip install torch==2.6.0 torchvision==0.17.0 timm==0.9.12\n\n"
+                        f"1. {torch_install}\n"
+                        f"2. {extra_package}\n"
+                        f"3. pip install transformers accelerate\n\n"
                         f"Original error: {str(load_error)}"
                     )
                     raise RuntimeError("Model initialization failed") from load_error
@@ -169,8 +276,13 @@ class Florence2Model(BaseVisionModel):
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
+    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]: # Add quality parameter
         """Analyze an image using the Florence-2 model."""
+        # Florence-2 doesn't inherently have quality levels like "detailed" or "creative"
+        # in the same way as some generative models. Its tasks are more specific.
+        # You can choose to ignore the 'quality' param or perhaps adapt the prompt
+        # slightly if you find a way, but for now, just accepting it fixes the TypeError.
+        logger.info(f"Florence2Model received quality='{quality}', but it's not currently used for generation adjustments.")
         try:
             # Validate image path
             if not os.path.exists(image_path):
