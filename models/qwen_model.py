@@ -24,15 +24,31 @@ except ImportError as e:
     logging.warning(f"PIL import error (will try again when needed): {str(e)}")
 
 # Try transformers imports but handle failures gracefully
+# Define variables that will be set properly by imports or remain None if imports fail
+Qwen2_5_VLForConditionalGeneration = None
+CLIPModel = None
+CLIPProcessor = None
+
 try:
-    from transformers import (
-        Qwen2_5_VLForConditionalGeneration, 
-        AutoTokenizer, 
-        AutoProcessor
-    )
+    from transformers import AutoTokenizer, AutoProcessor
+    
+    # Try to import Qwen model class - this may fail with older transformers versions
+    try:
+        from transformers import Qwen2_5_VLForConditionalGeneration
+    except ImportError as e:
+        logging.warning(f"Qwen2_5_VLForConditionalGeneration import error: {str(e)}")
+        logging.warning("This class requires the latest transformers: pip install git+https://github.com/huggingface/transformers.git")
+    
+    # Always import CLIP for fallback mechanism
+    try:
+        from transformers import CLIPModel, CLIPProcessor
+    except ImportError as e:
+        logging.warning(f"CLIP model import error: {str(e)}")
+        logging.warning("CLIP fallback won't be available; please install transformers")
+        
 except ImportError as e:
-    logging.warning(f"Transformers import error (will try again when needed): {str(e)}")
-    logging.warning("Make sure you have the latest transformers installed: pip install git+https://github.com/huggingface/transformers.git")
+    logging.warning(f"Base transformers import error: {str(e)}")
+    logging.warning("Make sure you have transformers installed: pip install git+https://github.com/huggingface/transformers.git")
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +106,31 @@ class QwenModel(BaseVisionModel):
             raise RuntimeError(error_msg)
 
     def _setup_model(self) -> None:
-        """Set up the Qwen2.5-VL model with fallback options."""
+        """Set up the Qwen2.5-VL model with enhanced error handling and fallback options."""
         try:
-            # Using the specific implementation suggested
-            from transformers import AutoTokenizer, AutoProcessor
-            from qwen_vl_utils import process_vision_info
+            # Check if we have the required Qwen model class 
+            if Qwen2_5_VLForConditionalGeneration is None:
+                # Try one more time to import it directly here
+                try:
+                    logger.info("Attempting direct import of Qwen2_5_VLForConditionalGeneration...")
+                    from transformers import Qwen2_5_VLForConditionalGeneration as DirectQwenClass
+                    # Make it available to global scope
+                    global Qwen2_5_VLForConditionalGeneration
+                    Qwen2_5_VLForConditionalGeneration = DirectQwenClass
+                    logger.info("Successfully imported Qwen2_5_VLForConditionalGeneration on demand")
+                except ImportError as e:
+                    logger.error(f"Cannot import Qwen2_5_VLForConditionalGeneration: {str(e)}")
+                    logger.error("Please upgrade transformers: pip install git+https://github.com/huggingface/transformers.git")
+                    raise ImportError("Missing Qwen2_5_VLForConditionalGeneration class - please upgrade transformers") from e
+                    
+            # Try to import qwen_vl_utils for vision processing
+            try:
+                from qwen_vl_utils import process_vision_info
+                self.process_vision_info = process_vision_info
+            except ImportError as e:
+                logger.warning(f"Missing qwen_vl_utils: {str(e)}")
+                logger.warning("Please install: pip install qwen-vl-utils[decord]==0.0.8")
+                self.process_vision_info = None
             
             logger.info(f"Loading Qwen2.5-VL model from {self.model_path}...")
             
@@ -104,11 +140,19 @@ class QwenModel(BaseVisionModel):
             try:
                 # First attempt: Try with specific Qwen2_5_VLForConditionalGeneration class
                 logger.info("Trying to load with Qwen2_5_VLForConditionalGeneration...")
+                
+                # Start with basic configuration for model loading
                 model_kwargs = {
-                    "torch_dtype": torch.float16 if torch.cuda.is_available() else torch.float32,
+                    "torch_dtype": self.torch_dtype,
                     "device_map": "auto",
                     "trust_remote_code": True
                 }
+                
+                # Check for low memory situation and apply optimizations if needed
+                if hasattr(self, 'get_low_memory_optimization_settings'):
+                    mem_settings = self.get_low_memory_optimization_settings()
+                    logger.info(f"Applying memory optimization settings for device: {self.device}")
+                    model_kwargs.update(mem_settings)
                 
                 # Only set quantization config if it's an AWQ model and we're not loading a local path
                 if is_awq_model and not os.path.isdir(self.model_path):
@@ -118,6 +162,7 @@ class QwenModel(BaseVisionModel):
                         model_kwargs["quantization_config"] = AwqConfig(bits=4)
                     except (ImportError, Exception) as qe:
                         logger.warning(f"Could not set up AWQ config: {str(qe)}")
+                        logger.warning("For AWQ support: pip install 'autoawq>=0.1.8'")
                 
                 self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                     self.model_path,
@@ -389,9 +434,29 @@ class QwenModel(BaseVisionModel):
         try:
             logger.info("Using CLIP fallback for image analysis")
             
-            # If we don't have a CLIP model already loaded, get one
-            if not hasattr(self, 'model') or self.model is None or not isinstance(self.model, CLIPModel): # Check if it's actually a CLIP model
-                from transformers import CLIPProcessor, CLIPModel
+            # First make sure we have CLIPModel/CLIPProcessor classes available
+            if CLIPModel is None or CLIPProcessor is None:
+                # Try importing again at runtime if not available from module import
+                try:
+                    from transformers import CLIPProcessor, CLIPModel as ImportedCLIPModel
+                    global CLIPModel, CLIPProcessor
+                    CLIPModel = ImportedCLIPModel  # Make available to global scope
+                    logger.info("Successfully imported CLIPModel and CLIPProcessor on demand")
+                except ImportError as e:
+                    logger.error(f"Failed to import CLIP models for fallback: {str(e)}")
+                    return (f"Error: Cannot use CLIP fallback mode. Please install or update transformers: {str(e)}", None)
+            
+            # Check if we already have a CLIP model loaded
+            need_new_model = True
+            if hasattr(self, 'model') and self.model is not None:
+                # Check if it's a CLIP model - use string comparison instead of isinstance
+                model_class_name = self.model.__class__.__name__
+                if model_class_name == "CLIPModel":
+                    need_new_model = False
+                    logger.info("Using existing CLIP model")
+            
+            # Load a new CLIP model if needed
+            if need_new_model:
                 fallback_model_id = "openai/clip-vit-base-patch32"
                 logger.info(f"Loading fallback CLIP model: {fallback_model_id}")
                 self.model = CLIPModel.from_pretrained(fallback_model_id)
