@@ -1,12 +1,38 @@
 # models/qwen_model.py
 from models.base_model import BaseVisionModel
 import logging
-import torch
-import importlib
-from PIL import Image
 import os
+import sys
+import platform
 from typing import Tuple, Optional
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoTokenizer, AutoProcessor
+import importlib
+
+# Handle imports in a way that prevents circular dependencies
+# Import only what's needed initially, defer other imports
+
+# Safely import torch first
+try:
+    import torch
+except ImportError as e:
+    logging.error(f"PyTorch import error: {str(e)}")
+    logging.error("PyTorch is required for all models. Please install it first.")
+
+# Defer PIL import to when it's needed
+try:
+    from PIL import Image
+except ImportError as e:
+    logging.warning(f"PIL import error (will try again when needed): {str(e)}")
+
+# Try transformers imports but handle failures gracefully
+try:
+    from transformers import (
+        Qwen2_5_VLForConditionalGeneration, 
+        AutoTokenizer, 
+        AutoProcessor
+    )
+except ImportError as e:
+    logging.warning(f"Transformers import error (will try again when needed): {str(e)}")
+    logging.warning("Make sure you have the latest transformers installed: pip install git+https://github.com/huggingface/transformers.git")
 
 logger = logging.getLogger(__name__)
 
