@@ -276,8 +276,13 @@ class Florence2Model(BaseVisionModel):
             logger.error(error_msg)
             raise RuntimeError(error_msg) from e
 
-    def analyze_image(self, image_path: str) -> Tuple[str, Optional[str]]:
+    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]: # Add quality parameter
         """Analyze an image using the Florence-2 model."""
+        # Florence-2 doesn't inherently have quality levels like "detailed" or "creative"
+        # in the same way as some generative models. Its tasks are more specific.
+        # You can choose to ignore the 'quality' param or perhaps adapt the prompt
+        # slightly if you find a way, but for now, just accepting it fixes the TypeError.
+        logger.info(f"Florence2Model received quality='{quality}', but it's not currently used for generation adjustments.")
         try:
             # Validate image path
             if not os.path.exists(image_path):

@@ -72,8 +72,13 @@ class QwenModel(BaseVisionModel):
                 padding=True
             )
             
-            # Move inputs to the same device as model
-            inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+            # Move inputs to the same device as model and cast to model's dtype
+            for key in inputs:
+                if hasattr(inputs[key], "to"):
+                    inputs[key] = inputs[key].to(device)
+                    # Only cast floating-point tensors to the model's dtype
+                    if torch.is_tensor(inputs[key]) and inputs[key].is_floating_point():
+                        inputs[key] = inputs[key].to(dtype)
             
             # Get prediction
             with torch.inference_mode():
