@@ -14,3 +14,4 @@ numpy>=1.24.0
 tqdm>=4.66.0
 qwen-vl-utils[decord]==0.0.8
 tkinterdnd2>=0.3.0
+autoawq>=0.1.8

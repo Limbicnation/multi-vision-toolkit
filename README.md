@@ -8,8 +8,8 @@
 
 ## 🚀 Key Features
 
-- **Multiple Vision Models**: Florence-2 (advanced vision tasks), BLIP (high-quality image captioning), and Qwen2.5-VL (high-quality multimodal captioning)
-- **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering
+- **Multiple Vision Models**: Florence-2 (advanced vision tasks), BLIP (high-quality image captioning), and Qwen2.5-VL (model loading, specific analysis capabilities currently under review)
+- **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and BLIP)
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
 - **Quality Controls**: Generate captions in standard, detailed, or creative modes
@@ -100,16 +100,16 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 | Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
 | Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
 | BLIP/Janus | High-quality image captioning | 4GB+ | Dummy model |
-| Qwen2.5-VL-3B-Instruct-AWQ | High-quality multimodal captioning with AWQ optimization | 8GB+ | CLIP model |
+| Qwen2.5-VL-3B-Instruct-AWQ | Multimodal model loading (analysis features pending review) | 8GB+ | CLIP model (loads, analysis features pending review) |
 
-Each model has a fallback mechanism if the primary model fails to load. The Qwen model specifically falls back to a CLIP-based implementation that provides basic image classification and captioning.
+Each model has a fallback mechanism if the primary model fails to load. The Qwen model specifically falls back to loading a CLIP model if Qwen itself fails to load; however, the specific analysis capabilities of this Qwen/CLIP setup within the toolkit are currently under review.
 
 ## 🔧 Troubleshooting
 
 - **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes
 - **Model Loading**: Update transformers with `pip install --upgrade transformers` or clear cache
 - **Image Errors**: Verify image format and permissions
-- **Qwen Model Errors**: Make sure to install `transformers` from GitHub and `qwen-vl-utils` with the [decord] feature. If the Qwen model fails to load, the application will automatically fall back to using CLIP for basic image classification.
+- **Qwen Model Errors**: Make sure to install `transformers` from GitHub, `qwen-vl-utils` with the [decord] feature, and `autoawq>=0.1.8`. If the Qwen model fails to load, the application will attempt to fall back to loading a CLIP model. The specific analysis functions for Qwen/CLIP within the toolkit are currently under review.
 - **KeyError: 'qwen2_5_vl'**: Update transformers with `pip install git+https://github.com/huggingface/transformers.git`
 - **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
 - **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.

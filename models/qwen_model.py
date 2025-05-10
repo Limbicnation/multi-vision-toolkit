@@ -241,9 +241,11 @@ class QwenModel(BaseVisionModel):
                         fallback_model = "openai/clip-vit-base-patch32"
                         self.model = CLIPModel.from_pretrained(fallback_model)
                         self.processor = CLIPProcessor.from_pretrained(fallback_model)
-                        logger.info(f"Loaded CLIP model as fallback: {fallback_model}")
+                        self.model = CLIPModel.from_pretrained(fallback_model, torch_dtype=self.torch_dtype).to(self.device)
                         
                         # This will be used to identify that we're using a fallback model
+                        self._using_fallback = True
+                        
                         self._using_fallback = True
                         
                     except Exception as fallback_error:
@@ -453,16 +455,17 @@ class QwenModel(BaseVisionModel):
     def _analyze_with_clip(self, image, quality: str = "standard") -> Tuple[str, Optional[str]]:
         """Fallback method using CLIP model for image analysis."""
         try:
+            global CLIPModel, CLIPProcessor # Moved to the beginning of the try-block
             logger.info("Using CLIP fallback for image analysis")
             
             # First make sure we have CLIPModel/CLIPProcessor classes available
             if CLIPModel is None or CLIPProcessor is None:
                 # Try importing again at runtime if not available from module import
                 try:
+                    # The 'global' declaration is now at the start of this 'try' block's parent scope
                     from transformers import CLIPProcessor as DynamicCLIPProcessor, CLIPModel as DynamicCLIPModel
-                    global CLIPModel, CLIPProcessor
-                    CLIPModel = DynamicCLIPModel
-                    CLIPProcessor = DynamicCLIPProcessor # Assign the aliased import to the global
+                    CLIPModel = DynamicCLIPModel # This will now assign to the global
+                    CLIPProcessor = DynamicCLIPProcessor 
                     logger.info("Successfully imported CLIPModel and CLIPProcessor on demand")
                 except ImportError as e:
                     logger.error(f"Failed to import CLIP models for fallback: {str(e)}")
@@ -480,12 +483,11 @@ class QwenModel(BaseVisionModel):
             # Load a new CLIP model if needed
             if need_new_model:
                 fallback_model_id = "openai/clip-vit-base-patch32"
-                logger.info(f"Loading fallback CLIP model: {fallback_model_id}")
-                self.model = CLIPModel.from_pretrained(fallback_model_id)
+                logger.info(f"Loading fallback CLIP model: {fallback_model_id} with dtype: {self.torch_dtype} on device: {self.device}")
+                self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=self.torch_dtype).to(self.device)
                 self.processor = CLIPProcessor.from_pretrained(fallback_model_id)
-                # Move the fallback model to the correct device
-                self.model.to(self.device) 
-                logger.info(f"CLIP model moved to device: {self.device}")
+                # self.model.to(self.device) # Already handled by .to(self.device) during from_pretrained
+                logger.info(f"CLIP model loaded on device: {self.device} with specified dtype.")
             
             # Prepare image with processor
             inputs = self.processor(
