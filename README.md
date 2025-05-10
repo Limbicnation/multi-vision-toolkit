@@ -44,11 +44,13 @@ pip install -r requirements.txt
 
 # Additional steps for specific models:
 
-# For Qwen2.5-VL:
-# Install/Upgrade transformers (latest recommended for Qwen support)
-pip install --upgrade git+https://github.com/huggingface/transformers.git
-# Install qwen utilities and ensure autoawq is up-to-date for AWQ models
-pip install qwen-vl-utils[decord]==0.0.8 "autoawq>=0.1.8"
+# For Qwen2.5-VL (using non-AWQ version):
+# 1. Install/Upgrade transformers (latest from git source is crucial)
+pip install git+https://github.com/huggingface/transformers.git --upgrade
+# 2. Install qwen utilities
+pip install qwen-vl-utils[decord]==0.0.8
+# 3. (Optional, for performance) Install flash-attn
+pip install flash-attn --no-build-isolation
 
 # For Florence-2 (if encountering issues):
 # Ensure timm is up-to-date
@@ -100,17 +102,17 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 | Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
 | Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
 | BLIP/Janus | High-quality image captioning | 4GB+ | Dummy model |
-| Qwen2.5-VL-3B-Instruct-AWQ | Multimodal model loading (analysis features pending review) | 8GB+ | CLIP model (loads, analysis features pending review) |
+| Qwen2.5-VL-3B-Instruct | High-quality multimodal captioning | 8GB+ (approx.) | CLIP model |
 
-Each model has a fallback mechanism if the primary model fails to load. The Qwen model specifically falls back to loading a CLIP model if Qwen itself fails to load; however, the specific analysis capabilities of this Qwen/CLIP setup within the toolkit are currently under review.
+Each model has a fallback mechanism if the primary model fails to load. The Qwen model (non-AWQ) will fall back to a CLIP-based implementation if it encounters issues.
 
 ## 🔧 Troubleshooting
 
 - **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes
-- **Model Loading**: Update transformers with `pip install --upgrade transformers` or clear cache
+- **Model Loading**: Ensure `transformers` is updated from git source for Qwen (`pip install git+https://github.com/huggingface/transformers.git --upgrade`) or clear cache.
 - **Image Errors**: Verify image format and permissions
-- **Qwen Model Errors**: Make sure to install `transformers` from GitHub, `qwen-vl-utils` with the [decord] feature, and `autoawq>=0.1.8`. If the Qwen model fails to load, the application will attempt to fall back to loading a CLIP model. The specific analysis functions for Qwen/CLIP within the toolkit are currently under review.
-- **KeyError: 'qwen2_5_vl'**: Update transformers with `pip install git+https://github.com/huggingface/transformers.git`
+- **Qwen Model Errors**: Ensure `transformers` is installed from GitHub and `qwen-vl-utils` with the `[decord]` feature is installed. The non-AWQ version of Qwen is now used by default. If it fails, it will fall back to CLIP. For performance, consider installing `flash-attn`.
+- **KeyError: 'qwen2_5_vl'**: This indicates your `transformers` library is too old or not installed from the git source. Update with `pip install git+https://github.com/huggingface/transformers.git --upgrade`.
 - **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
 - **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.
 

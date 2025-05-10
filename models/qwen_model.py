@@ -5,536 +5,295 @@ import logging
 logger = logging.getLogger(__name__) # Define logger early
 
 import os
-import sys
-import platform
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, List, Any
 import importlib
 
-# Handle imports in a way that prevents circular dependencies
-# Import only what's needed initially, defer other imports
-
-# Safely import torch first
 try:
     import torch
-except ImportError as e:
-    logging.error(f"PyTorch import error: {str(e)}")
-    logging.error("PyTorch is required for all models. Please install it first.")
+except ImportError:
+    logging.error("PyTorch is not installed. Please install PyTorch first.")
+    torch = None # type: ignore
 
-# Defer PIL import to when it's needed
 try:
     from PIL import Image
-except ImportError as e:
-    logger.warning(f"PIL import error (will try again when needed): {str(e)}")
-
-# Attempt to import Qwen specific class
-try:
-    from transformers import Qwen2_5_VLForConditionalGeneration
-    _QWEN_CLASS_AVAILABLE = True
 except ImportError:
-    Qwen2_5_VLForConditionalGeneration = None # Crucial: Define the name even if import fails
-    _QWEN_CLASS_AVAILABLE = False
-    logger.error( # Use error or warning
-        "Qwen2_5_VLForConditionalGeneration class not found in transformers. "
-        "The actual Qwen model will not load. Please update transformers: "
-        "pip install git+https://github.com/huggingface/transformers.git "
-        "or ensure transformers>=4.36.0 (approx for Qwen2.5 support)."
+    logger.warning("Pillow (PIL) not found. Image loading will fail.")
+    Image = None # type: ignore
+
+_QWEN_CLASS_AVAILABLE = False
+Qwen2_5_VLForConditionalGeneration = None
+AutoProcessor = None
+AutoTokenizer = None # type: ignore
+CLIPModel = None # type: ignore
+CLIPProcessor = None # type: ignore
+process_vision_info_fn = None # type: ignore
+
+try:
+    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+    _QWEN_CLASS_AVAILABLE = True
+    logger.info("Successfully imported Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer.")
+except ImportError as e:
+    logger.error(
+        f"Failed to import Qwen classes from transformers: {e}. "
+        "Ensure transformers is installed from git source: 'pip install git+https://github.com/huggingface/transformers.git --upgrade'"
     )
 
-# General transformers imports
 try:
-    from transformers import AutoTokenizer, AutoProcessor, CLIPModel, CLIPProcessor
+    from transformers import CLIPModel, CLIPProcessor
+    logger.info("Successfully imported CLIPModel and CLIPProcessor for fallback.")
 except ImportError as e:
-    logger.warning(f"Base transformers import error (AutoTokenizer, AutoProcessor, CLIPModel, CLIPProcessor): {str(e)}")
-    logger.warning("Make sure you have transformers installed: pip install git+https://github.com/huggingface/transformers.git")
-    # Define CLIPModel and CLIPProcessor as None if their import fails here,
-    # as they are used for fallback. Qwen2_5_VLForConditionalGeneration is handled above.
-    if 'CLIPModel' not in globals(): # Check if already defined (e.g. by previous try-except)
-        CLIPModel = None
-    if 'CLIPProcessor' not in globals():
-        CLIPProcessor = None
+    logger.warning(f"Failed to import CLIPModel or CLIPProcessor: {e}. Fallback to CLIP may not work.")
+
+try:
+    from qwen_vl_utils import process_vision_info
+    process_vision_info_fn = process_vision_info
+    logger.info("Successfully imported process_vision_info from qwen_vl_utils.")
+except ImportError as e:
+    logger.warning(
+        f"Failed to import process_vision_info from qwen_vl_utils: {e}. "
+        "Qwen model might not process inputs correctly. Install with: pip install qwen-vl-utils[decord]==0.0.8"
+    )
 
 
 class QwenModel(BaseVisionModel):
-    """Qwen2.5-VL-3B-Instruct-AWQ model implementation for image captioning."""
+    """Qwen2.5-VL (non-AWQ) model implementation for image captioning."""
     
     REQUIRED_PACKAGES = {
-        'transformers': 'transformers',
+        'transformers': 'transformers (latest from git)',
         'torch': 'torch',
         'PIL': 'Pillow',
-        'qwen_vl_utils': 'qwen-vl-utils[decord]==0.0.8'
+        'qwen_vl_utils': 'qwen-vl-utils[decord]==0.0.8',
+        'accelerate': 'accelerate',
+        'flash_attn': 'flash-attn (optional, for performance, install with --no-build-isolation)'
     }
 
     def __init__(self, model_path: str = None):
-        """
-        Initialize the Qwen2.5-VL-3B-Instruct-AWQ model.
-        
-        Args:
-            model_path (str): HuggingFace model path
-        """
-        # Try local path first, then fall back to HuggingFace
-        if model_path is None:
-            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Qwen2.5-VL-3B-Instruct-AWQ")
-            if os.path.exists(local_path):
-                self.model_path = local_path
-                logger.info(f"Using local model: {self.model_path}")
-            else:
-                self.model_path = "Qwen/Qwen2.5-VL-3B-Instruct-AWQ"
-                logger.info(f"Using remote model: {self.model_path}")
-        else:
-            self.model_path = model_path
-            logger.info(f"Using specified model: {self.model_path}")
+        # Always default to the non-AWQ version due to autoawq complexities
+        self.model_path = "Qwen/Qwen2.5-VL-3B-Instruct" 
+        logger.info(f"Initializing QwenModel with non-AWQ model: {self.model_path}")
+        if model_path is not None and model_path != self.model_path:
+            logger.warning(f"Specified model_path '{model_path}' will be overridden by non-AWQ default '{self.model_path}'.")
             
         self._check_dependencies()
+        self.tokenizer = None 
         super().__init__()
 
     @classmethod
     def _check_dependencies(cls) -> None:
-        """Check for required dependencies and provide clear installation instructions."""
         missing_packages = []
         for package, pip_name in cls.REQUIRED_PACKAGES.items():
+            if package == 'flash_attn': 
+                try:
+                    importlib.import_module(package)
+                except ImportError:
+                    logger.warning("flash_attn not found. For optimal performance, install with 'pip install flash-attn --no-build-isolation'.")
+                continue
+
             try:
                 importlib.import_module(package)
+                if package == 'transformers' and not _QWEN_CLASS_AVAILABLE:
+                    missing_packages.append((package, f"{pip_name} (Qwen2_5_VLForConditionalGeneration class not found. Ensure latest git version.)"))
+                elif package == 'qwen_vl_utils' and process_vision_info_fn is None:
+                     missing_packages.append((package, pip_name))
             except ImportError:
                 missing_packages.append((package, pip_name))
-
+        
         if missing_packages:
-            install_command = "pip install " + " ".join(pkg[1] for pkg in missing_packages)
+            install_commands = []
+            for pkg, name in missing_packages:
+                if "transformers" in name:
+                    install_commands.append("pip install git+https://github.com/huggingface/transformers.git --upgrade")
+                else:
+                    install_commands.append(f"pip install {name}")
+            
             error_msg = (
-                f"Missing required packages: {', '.join(pkg[0] for pkg in missing_packages)}\n"
-                f"Please install them using:\n{install_command}\n\n"
-                f"It's highly recommended to use `qwen-vl-utils[decord]` feature for faster video loading."
+                f"Missing required packages/classes for QwenModel: {', '.join(pkg[0] for pkg in missing_packages)}\n"
+                f"Please install or update them.\nExample install commands:\n" + "\n".join(install_commands)
             )
             logger.error(error_msg)
-            raise RuntimeError(error_msg)
 
     def _load_clip_as_fallback(self, reason: str) -> None:
-        """Loads CLIP model as a fallback."""
         logger.warning(f"Attempting to load CLIP model as a fallback due to: {reason}")
         try:
-            global CLIPModel, CLIPProcessor # Ensure we are using or updating the module-level globals
+            global CLIPModel, CLIPProcessor
             if CLIPModel is None or CLIPProcessor is None:
-                logger.info("CLIPModel or CLIPProcessor not imported at module level, attempting dynamic import for fallback.")
                 from transformers import CLIPModel as DynamicCLIPModel, CLIPProcessor as DynamicCLIPProcessor
                 CLIPModel = DynamicCLIPModel
                 CLIPProcessor = DynamicCLIPProcessor
                 if CLIPModel is None or CLIPProcessor is None:
-                    logger.error("Dynamic import of CLIPModel/CLIPProcessor failed.")
                     raise ImportError("CLIPModel/CLIPProcessor not available for fallback.")
 
             fallback_model_id = "openai/clip-vit-base-patch32"
-            logger.info(f"Loading fallback CLIP model: {fallback_model_id} with dtype: {self.torch_dtype} on device: {self.device}")
-            
-            # Ensure model is loaded with the correct dtype and moved to the device
-            self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=self.torch_dtype).to(self.device)
+            clip_dtype_to_use = self.torch_dtype if self.device.type == 'cuda' else torch.float32
+            logger.info(f"Loading fallback CLIP model: {fallback_model_id} with dtype: {clip_dtype_to_use} on device: {self.device}")
+
+            self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=clip_dtype_to_use).to(self.device)
             self.processor = CLIPProcessor.from_pretrained(fallback_model_id)
+            self.tokenizer = None 
             
-            logger.info(f"Successfully loaded CLIP model as fallback: {fallback_model_id}")
+            logger.info(f"Successfully loaded CLIP model as fallback: {fallback_model_id} to device {self.device} with dtype {self.model.dtype}")
             self._using_fallback = True
         except Exception as fallback_error:
             logger.error(f"Failed to load CLIP fallback model: {str(fallback_error)}")
-            # This error means the model could not be set up, even with fallback
             raise RuntimeError(f"Qwen model setup failed, and fallback CLIP model also failed to load: {fallback_error}") from fallback_error
 
     def _setup_model(self) -> None:
-        """Set up the Qwen2.5-VL model with enhanced error handling and fallback options."""
+        self._using_fallback = False
         try:
-            # Explicitly check if the Qwen class is available before proceeding
             if not _QWEN_CLASS_AVAILABLE or Qwen2_5_VLForConditionalGeneration is None:
-                logger.error("Cannot proceed with Qwen model setup: Qwen2_5_VLForConditionalGeneration class is not available due to import failure.")
-                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found during initial import.")
-                return # Stop further Qwen-specific setup attempts
+                logger.error("Qwen2_5_VLForConditionalGeneration class not available. Falling back.")
+                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found.")
+                return
 
-            # Try to import qwen_vl_utils for vision processing
-            try:
-                from qwen_vl_utils import process_vision_info
-                self.process_vision_info = process_vision_info
-            except ImportError as e:
-                logger.warning(f"Missing qwen_vl_utils: {str(e)}")
-                logger.warning("Please install: pip install qwen-vl-utils[decord]==0.0.8")
-                self.process_vision_info = None
+            if process_vision_info_fn is None:
+                logger.error("process_vision_info from qwen_vl_utils not available. Falling back.")
+                self._load_clip_as_fallback(reason="process_vision_info_fn not available.")
+                return
             
-            logger.info(f"Loading Qwen2.5-VL model from {self.model_path}...")
+            logger.info(f"Loading Qwen2.5-VL (non-AWQ) model: {self.model_path}")
             
-            # Try to determine if this is an AWQ model or a standard model based on the path
-            is_awq_model = "AWQ" in self.model_path or "awq" in self.model_path
-            
-            try:
-                # First attempt: Try with specific Qwen2_5_VLForConditionalGeneration class
-                logger.info("Trying to load with Qwen2_5_VLForConditionalGeneration...")
-                
-                # Start with basic configuration for model loading
-                model_kwargs = {
-                    "torch_dtype": self.torch_dtype,
-                    "device_map": "auto",
-                    "trust_remote_code": True
-                }
-                
-                # Check for low memory situation and apply optimizations if needed
-                if hasattr(self, 'get_low_memory_optimization_settings'):
-                    mem_settings = self.get_low_memory_optimization_settings()
-                    logger.info(f"Applying memory optimization settings for device: {self.device}")
-                    model_kwargs.update(mem_settings)
-                
-                # Only set quantization config if it's an AWQ model and we're not loading a local path
-                if is_awq_model and not os.path.isdir(self.model_path):
-                    try:
-                        from transformers import AwqConfig
-                        logger.info("Setting AWQ quantization configuration...")
-                        model_kwargs["quantization_config"] = AwqConfig(bits=4)
-                    except (ImportError, Exception) as qe:
-                        logger.warning(f"Could not set up AWQ config: {str(qe)}")
-                        logger.warning("For AWQ support: pip install 'autoawq>=0.1.8'")
-                
-                self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                    self.model_path,
-                    **model_kwargs
-                )
-                logger.info("Successfully loaded Qwen2.5-VL model")
-                
-                # Load processor with trust_remote_code
-                self.processor = AutoProcessor.from_pretrained(
-                    self.model_path,
-                    trust_remote_code=True
-                )
-                logger.info("Successfully loaded Qwen2.5-VL processor")
-                
-            except Exception as first_error:
-                logger.warning(f"First loading attempt failed: {str(first_error)}")
-                logger.info("Trying alternative loading approach...")
-                
+            model_kwargs: Dict[str, Any] = {
+                "torch_dtype": self.torch_dtype,
+                "device_map": "auto",
+                "trust_remote_code": True
+            }
+
+            if self.device.type == 'cuda' and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
                 try:
-                    # Second attempt: Try without AWQ quantization
-                    if is_awq_model:
-                        logger.info("Attempting to load non-AWQ version...")
-                        
-                        # Try a non-AWQ version of the model
-                        alternative_model_path = self.model_path.replace("-AWQ", "").replace("awq", "")
-                        if alternative_model_path == self.model_path:
-                            alternative_model_path = "Qwen/Qwen2.5-VL-3B-Instruct"  # Fallback to non-AWQ
-                        
-                        logger.info(f"Trying alternative model: {alternative_model_path}")
-                        
-                        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                            alternative_model_path,
-                            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-                            device_map="auto",
-                            trust_remote_code=True
-                        )
-                        
-                        self.processor = AutoProcessor.from_pretrained(
-                            alternative_model_path,
-                            trust_remote_code=True
-                        )
-                        logger.info(f"Successfully loaded alternative Qwen2.5-VL model: {alternative_model_path}")
-                    else:
-                        # If it's not an AWQ issue, re-raise the original error
-                        raise first_error
-                    
-                except Exception as second_error:
-                    logger.error(f"Failed to load model with alternative approach: {str(second_error)}")
-                    
-                    # Third attempt: Try with CLIP model as fallback
-                    logger.warning("Attempting to load CLIP model as a fallback...")
-                    try:
-                        from transformers import CLIPProcessor, CLIPModel
-                        
-                        fallback_model = "openai/clip-vit-base-patch32"
-                        self.model = CLIPModel.from_pretrained(fallback_model)
-                        self.processor = CLIPProcessor.from_pretrained(fallback_model)
-                        self.model = CLIPModel.from_pretrained(fallback_model, torch_dtype=self.torch_dtype).to(self.device)
-                        
-                        # This will be used to identify that we're using a fallback model
-                        self._using_fallback = True
-                        
-                        self._using_fallback = True
-                        
-                    except Exception as fallback_error:
-                        logger.error(f"Failed to load fallback model: {str(fallback_error)}")
-                        raise RuntimeError(f"All model loading attempts failed. Original error: {str(first_error)}") from first_error
+                    import flash_attn 
+                    logger.info("Attempting to enable Flash Attention 2 for Qwen model.")
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                except ImportError:
+                    logger.warning("flash_attn library not found. Flash Attention 2 cannot be enabled for Qwen. Install with 'pip install flash-attn --no-build-isolation'")
+                except Exception as e: # Catch other potential errors if attn_implementation is not supported by the transformers version
+                    logger.warning(f"Could not enable Flash Attention 2 for Qwen: {e}. Proceeding without it.")
             
-            # Store the process_vision_info function for later use
-            self.process_vision_info = process_vision_info
-            self._using_fallback = getattr(self, '_using_fallback', False)
-                
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
+            logger.info(f"Successfully loaded Qwen model: {self.model_path} with kwargs: {model_kwargs}")
+            
+            self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+            logger.info(f"Successfully loaded Qwen processor and tokenizer for {self.model_path}")
+
         except Exception as e:
-            error_msg = f"Failed to initialize Qwen2.5-VL model: {str(e)}"
-            logger.error(error_msg)
-            raise RuntimeError(error_msg) from e
+            logger.error(f"Failed to initialize Qwen model: {str(e)}")
+            self._load_clip_as_fallback(reason=f"Qwen (non-AWQ) load failed: {e}")
 
     def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
-        """
-        Analyze an image using the Qwen2.5-VL model or fallback.
+        if not os.path.exists(image_path):
+            logger.error(f"Image file not found: {image_path}")
+            return "Error: Image file not found.", None
         
-        Args:
-            image_path (str): Path to the image file
-            quality (str): Quality level - "standard", "detailed", or "creative"
-            
-        Returns:
-            Tuple[str, Optional[str]]: (description, clean_caption)
-        """
         try:
-            # Validate image path
-            if not os.path.exists(image_path):
-                logger.error(f"Image file not found: {image_path}")
-                return "Error: Image file not found.", None
-                
-            # Load and validate image
-            try:
-                image = Image.open(image_path)
-                if image.mode != 'RGB':
-                    image = image.convert('RGB')
-            except Exception as e:
-                logger.error(f"Error loading image {image_path}: {str(e)}")
-                return "Error: Failed to load or process image.", None
-            
-            # Check if we're using a fallback model (CLIP)
-            if getattr(self, '_using_fallback', False):
-                logger.info("Using fallback CLIP model for image analysis")
-                return self._analyze_with_clip(image, quality)
-            
-            # Prepare prompt based on quality
-            if quality == "detailed":
-                instruction = "Describe this image in detail, including all subjects, actions, background elements, colors, and visual composition."
-            elif quality == "creative":
-                instruction = "Describe this image in a creative and vivid way, focusing on artistic elements, mood, and storytelling aspects."
-            else:  # standard
-                instruction = "Describe this image."
-
-            # Create messages structure for Qwen2.5-VL
-            messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},  # Use image object directly
-                        {"type": "text", "text": instruction},
-                    ],
-                }
-            ]
-
-            # Prepare inputs for the model
-            try:
-                if self.processor is None:
-                    logger.warning("No processor available. Using direct model access approach.")
-                    # This is a simplified approach when the processor isn't available
-                    # It might not work for all cases but it's a fallback
-                    from transformers import AutoTokenizer
-                    try:
-                        tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-                        # Simple tokenization of the instruction
-                        text = f"<image>\n{instruction}"
-                        inputs = tokenizer(text, return_tensors="pt").to(self.device)
-                        # Add the image as pixel_values (simplified approach)
-                        inputs["pixel_values"] = torch.stack([self._preprocess_image(image)]).to(self.device)
-                    except Exception as tokenizer_error:
-                        logger.error(f"Failed to create inputs without processor: {str(tokenizer_error)}")
-                        return "Error: Failed to process inputs. The model processor is not available.", None
-                else:
-                    try:
-                        # Normal processing with processor and process_vision_info
-                        if hasattr(self, 'process_vision_info'):
-                            text = self.processor.apply_chat_template(
-                                messages, tokenize=False, add_generation_prompt=True
-                            )
-                            image_inputs, video_inputs = self.process_vision_info(messages)
-                            inputs = self.processor(
-                                text=[text],
-                                images=image_inputs,
-                                videos=video_inputs,
-                                padding=True,
-                                return_tensors="pt",
-                            )
-                        else:
-                            # Fallback for when process_vision_info is not available
-                            inputs = self.processor(
-                                images=image,
-                                text=instruction,
-                                return_tensors="pt"
-                            )
-                        
-                        inputs = inputs.to(self.device)
-                    except Exception as processor_error:
-                        logger.error(f"Error using processor: {processor_error}")
-                        # Try the fallback CLIP model approach
-                        return self._analyze_with_clip(image, quality)
-                    
-                # Generate caption
-                with torch.inference_mode():
-                    if quality == "detailed":
-                        max_new_tokens = 200
-                        temperature = 0.7
-                        top_p = 0.9
-                    elif quality == "creative":
-                        max_new_tokens = 150
-                        temperature = 0.9
-                        top_p = 0.95
-                    else:  # standard
-                        max_new_tokens = 128
-                        temperature = 0.7
-                        top_p = 0.9
-                    
-                    try:
-                        generated_ids = self.model.generate(
-                            **inputs,
-                            max_new_tokens=max_new_tokens,
-                            do_sample=True,
-                            temperature=temperature,
-                            top_p=top_p
-                        )
-                    except Exception as gen_error:
-                        logger.error(f"Error during generation: {str(gen_error)}")
-                        # Try without keyword arguments if the model interface is different
-                        try:
-                            if "input_ids" in inputs and "pixel_values" in inputs:
-                                # Use specific arguments pattern
-                                generated_ids = self.model.generate(
-                                    input_ids=inputs["input_ids"],
-                                    pixel_values=inputs["pixel_values"],
-                                    max_new_tokens=max_new_tokens,
-                                    do_sample=True,
-                                    temperature=temperature,
-                                    top_p=top_p
-                                )
-                            else:
-                                # Generic generation
-                                generated_ids = self.model.generate(
-                                    inputs["input_ids"],
-                                    max_new_tokens=max_new_tokens,
-                                    do_sample=True
-                                )
-                        except Exception as fallback_gen_error:
-                            logger.error(f"Fallback generation failed: {str(fallback_gen_error)}")
-                            return self._analyze_with_clip(image, quality)
-                
-                # Extract and decode the generated tokens
-                try:
-                    if "input_ids" in inputs:
-                        # Extract only the newly generated tokens
-                        generated_ids_trimmed = [
-                            out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)
-                        ]
-                    else:
-                        # Just use all the generated tokens
-                        generated_ids_trimmed = generated_ids
-                    
-                    # Decode caption
-                    if self.processor is not None and hasattr(self.processor, 'batch_decode'):
-                        caption = self.processor.batch_decode(
-                            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-                        )[0]
-                    elif hasattr(self.model, 'decode') and callable(getattr(self.model, 'decode')):
-                        caption = self.model.decode(generated_ids_trimmed[0])
-                    else:
-                        # Fallback to tokenizer
-                        from transformers import AutoTokenizer
-                        tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-                        caption = tokenizer.decode(generated_ids_trimmed[0], skip_special_tokens=True)
-                except Exception as decode_error:
-                    logger.error(f"Error decoding output: {str(decode_error)}")
-                    return self._analyze_with_clip(image, quality)
-                
-                # Clean output
-                caption = self.clean_output(caption)
-                
-                # Prepare description with the model name
-                model_name = "Qwen2.5-VL"
-                if getattr(self, '_using_fallback', False):
-                    model_name += " (Fallback Mode)"
-                description = f"Description: {caption}\n\nGenerated by: {model_name}"
-                
-                return description, caption
-                
-            except Exception as e:
-                logger.error(f"Error generating caption: {str(e)}")
-                # Try the fallback method
-                return self._analyze_with_clip(image, quality)
-                
+            pil_image = Image.open(image_path)
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
         except Exception as e:
-            logger.error(f"Error analyzing image with Qwen2.5-VL: {str(e)}")
-            return f"Error: An unexpected error occurred. {str(e)}", None
-            
-    def _analyze_with_clip(self, image, quality: str = "standard") -> Tuple[str, Optional[str]]:
-        """Fallback method using CLIP model for image analysis."""
+            logger.error(f"Error loading image {image_path}: {str(e)}")
+            return "Error: Failed to load or process image.", None
+
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE, process_vision_info_fn]):
+            logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
+            return self._analyze_with_clip(pil_image, quality)
+
+        if quality == "detailed":
+            instruction = "Describe this image in detail, including all subjects, actions, background elements, colors, and visual composition."
+        elif quality == "creative":
+            instruction = "Describe this image in a creative and vivid way, focusing on artistic elements, mood, and storytelling aspects."
+        else:  # standard
+            instruction = "Describe this image."
+
+        messages = [{"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}]
+
         try:
-            global CLIPModel, CLIPProcessor # Moved to the beginning of the try-block
-            logger.info("Using CLIP fallback for image analysis")
+            text_for_template = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            image_inputs_processed, video_inputs_processed = process_vision_info_fn(messages)
             
-            # First make sure we have CLIPModel/CLIPProcessor classes available
+            inputs = self.processor(
+                text=[text_for_template],
+                images=image_inputs_processed,
+                videos=video_inputs_processed,
+                padding=True,
+                return_tensors="pt",
+            ).to(self.device)
+
+            generation_params = {"max_new_tokens": 128, "do_sample": True, "temperature": 0.7, "top_p": 0.9}
+            if quality == "detailed":
+                generation_params.update({"max_new_tokens": 256, "temperature": 0.6})
+            elif quality == "creative":
+                generation_params.update({"max_new_tokens": 200, "temperature": 0.8, "top_p": 0.95})
+
+            with torch.inference_mode():
+                generated_ids = self.model.generate(**inputs, **generation_params)
+            
+            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)]
+            caption = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+            caption = self.clean_output(caption)
+            
+            model_name = "Qwen2.5-VL (non-AWQ)"
+            description = f"Description: {caption}\n\nGenerated by: {model_name}"
+            return description, caption
+
+        except Exception as e:
+            logger.error(f"Error generating caption with Qwen: {str(e)}")
+            return self._analyze_with_clip(pil_image, quality)
+
+    def _analyze_with_clip(self, image: Image.Image, quality: str = "standard") -> Tuple[str, Optional[str]]:
+        logger.info("Using CLIP fallback for image analysis (invoked from _analyze_with_clip)")
+        try:
+            global CLIPModel, CLIPProcessor
             if CLIPModel is None or CLIPProcessor is None:
-                # Try importing again at runtime if not available from module import
-                try:
-                    # The 'global' declaration is now at the start of this 'try' block's parent scope
-                    from transformers import CLIPProcessor as DynamicCLIPProcessor, CLIPModel as DynamicCLIPModel
-                    CLIPModel = DynamicCLIPModel # This will now assign to the global
-                    CLIPProcessor = DynamicCLIPProcessor 
-                    logger.info("Successfully imported CLIPModel and CLIPProcessor on demand")
-                except ImportError as e:
-                    logger.error(f"Failed to import CLIP models for fallback: {str(e)}")
-                    return (f"Error: Cannot use CLIP fallback mode. Please install or update transformers: {str(e)}", None)
+                from transformers import CLIPProcessor as DynamicCLIPProcessor, CLIPModel as DynamicCLIPModel
+                CLIPModel = DynamicCLIPModel 
+                CLIPProcessor = DynamicCLIPProcessor
+                if CLIPModel is None or CLIPProcessor is None:
+                     logger.error("Failed to import CLIP models for fallback.")
+                     return "Error: CLIP Fallback components not available.", None
             
-            # Check if we already have a CLIP model loaded
-            need_new_model = True
-            if hasattr(self, 'model') and self.model is not None:
-                # Check if it's a CLIP model - use string comparison instead of isinstance
-                model_class_name = self.model.__class__.__name__
-                if model_class_name == "CLIPModel":
-                    need_new_model = False
-                    logger.info("Using existing CLIP model")
-            
-            # Load a new CLIP model if needed
-            if need_new_model:
+            if not (hasattr(self, 'model') and isinstance(self.model, CLIPModel) and \
+                    hasattr(self, 'processor') and isinstance(self.processor, CLIPProcessor) and \
+                    getattr(self, '_using_fallback', False)):
+                
                 fallback_model_id = "openai/clip-vit-base-patch32"
-                logger.info(f"Loading fallback CLIP model: {fallback_model_id} with dtype: {self.torch_dtype} on device: {self.device}")
-                self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=self.torch_dtype).to(self.device)
+                clip_dtype_to_use = self.torch_dtype if self.device.type == 'cuda' else torch.float32
+                logger.info(f"Loading/Re-loading CLIP model for fallback: {fallback_model_id} with dtype: {clip_dtype_to_use} on device: {self.device}")
+                
+                self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=clip_dtype_to_use).to(self.device)
                 self.processor = CLIPProcessor.from_pretrained(fallback_model_id)
-                # self.model.to(self.device) # Already handled by .to(self.device) during from_pretrained
-                logger.info(f"CLIP model loaded on device: {self.device} with specified dtype.")
-            
-            # Prepare image with processor
+                self._using_fallback = True
+            else:
+                logger.info("Reusing existing CLIP model and processor for fallback analysis.")
+
             inputs = self.processor(
                 text=["a photo of a landscape", "a portrait", "a photo of food", 
-                      "a photo of an animal", "a photo of a building", "a photo of people"],
+                      "a photo of an animal", "a photo of a building", "a photo of people", "an abstract image", "a drawing or illustration"],
                 images=image,
                 return_tensors="pt",
                 padding=True
-            ).to(self.device) # Ensure inputs are also on the correct device
+            ).to(self.device)
             
-            # Get prediction
             with torch.inference_mode():
                 outputs = self.model(**inputs)
                 
-            # Get the image-text similarity scores
             logits_per_image = outputs.logits_per_image
             probs = logits_per_image.softmax(dim=1).tolist()[0]
             
-            # Get the most likely category
-            categories = ["landscape", "portrait", "food", "animal", "building", "people"]
-            scores = list(zip(categories, probs))
-            scores.sort(key=lambda x: x[1], reverse=True)
+            categories = ["landscape", "portrait", "food", "animal", "building", "people", "abstract", "illustration"]
+            scores = sorted(list(zip(categories, probs)), key=lambda x: x[1], reverse=True)
             
-            # Generate a caption based on quality level
             top_category = scores[0][0]
             confidence = scores[0][1] * 100
             
             if quality == "detailed":
-                # More detailed description
-                other_elements = [f"{cat} ({conf:.1f}%)" for cat, conf in scores[1:3]]
+                other_elements = [f"{cat} ({s[1]*100:.1f}%)" for i, (cat, s) in enumerate(scores[1:3])]
                 caption = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
-                caption += f"It may also contain elements of {' and '.join(other_elements)}."
+                if other_elements: caption += f"It may also contain elements of {' and '.join(other_elements)}."
             elif quality == "creative":
-                # More creative description
-                caption = f"An interesting {top_category} scene captured in this image. "
-                if top_category == "landscape":
-                    caption += "The natural beauty unfolds across the frame, inviting the viewer to explore its details."
-                elif top_category == "portrait":
-                    caption += "The subject's presence dominates the composition, telling a story through expression and posture."
-                elif top_category == "food":
-                    caption += "The culinary delight is presented with care, enticing the viewer's appetite."
-                elif top_category == "animal":
-                    caption += "The creature's character and form create a compelling focal point in the image."
-                elif top_category == "building":
-                    caption += "The architectural elements reveal both function and aesthetic considerations."
-                else:  # people
-                    caption += "The human elements bring life and scale to the composition."
+                caption = f"A captivating {top_category} scene. "
+                if top_category == "landscape": caption += "The natural beauty unfolds, inviting exploration."
+                elif top_category == "portrait": caption += "The subject's presence tells a story through expression."
+                elif top_category == "animal": caption += "The creature's character is a compelling focal point."
+                else: caption += "The composition is intriguing."
             else:  # standard
                 caption = f"This image shows a {top_category}."
                 
@@ -543,62 +302,18 @@ class QwenModel(BaseVisionModel):
             
         except Exception as e:
             logger.error(f"Error in CLIP fallback analysis: {str(e)}")
-            return f"Image analysis failed with both primary and fallback models. Error: {str(e)}", None
+            return f"Image analysis failed with CLIP fallback. Error: {str(e)}", None
 
-    def _preprocess_image(self, image):
-        """
-        Preprocess an image for the model when no processor is available.
-        
-        Args:
-            image (PIL.Image): The input image
-            
-        Returns:
-            torch.Tensor: The preprocessed image tensor
-        """
-        try:
-            # Basic preprocessing for vision models (resize to 224x224, normalize)
-            from torchvision import transforms
-            
-            transform = transforms.Compose([
-                transforms.Resize((224, 224)),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            
-            return transform(image)
-        except Exception as e:
-            logger.error(f"Error preprocessing image: {str(e)}")
-            # Return a blank tensor as fallback
-            return torch.zeros((3, 224, 224), device=self.device)
-    
+    def _preprocess_image(self, image: Image.Image) -> Any:
+        logger.debug("QwenModel._preprocess_image called, but typically handled by processor/tokenizer.")
+        return image 
+
     @classmethod
     def is_available(cls) -> bool:
-        """Check if the model can be initialized with current environment."""
-        try:
-            # Check for Qwen2_5_VLForConditionalGeneration support
-            import transformers
-            try:
-                from transformers import Qwen2_5_VLForConditionalGeneration
-                has_qwen_class = True
-            except ImportError:
-                logger.error("Your transformers version doesn't support Qwen2_5_VLForConditionalGeneration. Please install transformers==4.36.2.")
-                has_qwen_class = False
-            
-            # Check for qwen_vl_utils
-            try:
-                import qwen_vl_utils
-                has_qwen_utils = True
-            except ImportError:
-                logger.error("qwen_vl_utils not found. Please install: pip install qwen-vl-utils[decord]==0.0.8")
-                has_qwen_utils = False
-            
-            # Check CUDA availability
-            import torch
-            has_cuda = torch.cuda.is_available()
-            if not has_cuda:
-                logger.warning("CUDA not available. Model will run in CPU mode with greatly reduced performance.")
-            
-            return has_qwen_class and has_qwen_utils
-        except ImportError as e:
-            logger.error(f"Required package not found: {str(e)}")
+        if not _QWEN_CLASS_AVAILABLE:
+            logger.warning("Qwen2_5_VLForConditionalGeneration class not found. Qwen model not available.")
             return False
+        if process_vision_info_fn is None: # Check the imported function reference
+            logger.warning("process_vision_info from qwen_vl_utils not found. Qwen model may not be fully available.")
+            # Consider returning False if qwen_vl_utils is absolutely critical for any operation
+        return True
