@@ -124,7 +124,7 @@ class QwenModel(BaseVisionModel):
                     raise ImportError("CLIPModel/CLIPProcessor not available for fallback.")
 
             fallback_model_id = "openai/clip-vit-base-patch32"
-            clip_dtype_to_use = self.torch_dtype if self.device.type == 'cuda' else torch.float32
+            clip_dtype_to_use = self.torch_dtype if self.device.startswith('cuda') else torch.float32
             logger.info(f"Loading fallback CLIP model: {fallback_model_id} with dtype: {clip_dtype_to_use} on device: {self.device}")
 
             self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=clip_dtype_to_use).to(self.device)
@@ -154,11 +154,20 @@ class QwenModel(BaseVisionModel):
             
             model_kwargs: Dict[str, Any] = {
                 "torch_dtype": self.torch_dtype,
-                "device_map": "auto",
                 "trust_remote_code": True
             }
+            
+            if self.device.startswith('cuda'):
+                model_kwargs["device_map"] = torch.device(self.device)
+                logger.info(f"Setting device_map to torch.device('{self.device}') for CUDA.")
+            elif self.device in ["cpu", "mps"]:
+                model_kwargs["device_map"] = self.device
+                logger.info(f"Setting device_map to '{self.device}'.")
+            else:
+                model_kwargs["device_map"] = "auto" # Fallback for other scenarios
+                logger.info("Setting device_map to 'auto'.")
 
-            if self.device.type == 'cuda' and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
+            if self.device.startswith('cuda') and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
                 try:
                     import flash_attn 
                     logger.info("Attempting to enable Flash Attention 2 for Qwen model.")
@@ -196,14 +205,14 @@ class QwenModel(BaseVisionModel):
             logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             return self._analyze_with_clip(pil_image, quality)
 
-        if quality == "detailed":
-            instruction = "Describe this image in detail, including all subjects, actions, background elements, colors, and visual composition."
-        elif quality == "creative":
-            instruction = "Describe this image in a creative and vivid way, focusing on artistic elements, mood, and storytelling aspects."
-        else:  # standard
-            instruction = "Describe this image."
-
-        messages = [{"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}]
+        # Use a very direct and simple English instruction, similar to Qwen-VL-Chat's "这是什么?" (What is this?)
+        # but adapted for captioning and English.
+        # The 'quality' parameter will be ignored for this test to ensure the simplest possible prompt.
+        instruction = "Describe the image in English."
+        
+        messages = [
+            {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
+        ]
 
         try:
             text_for_template = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -238,6 +247,113 @@ class QwenModel(BaseVisionModel):
             logger.error(f"Error generating caption with Qwen: {str(e)}")
             return self._analyze_with_clip(pil_image, quality)
 
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+        if not image_paths:
+            return []
+
+        results: List[Optional[Tuple[str, Optional[str]]]] = [None] * len(image_paths)
+        pil_images_to_process: List[Tuple[int, Image.Image]] = []  # Stores (original_index, pil_image)
+
+        for i, image_path in enumerate(image_paths):
+            if not os.path.exists(image_path):
+                logger.error(f"Image file not found: {image_path}")
+                results[i] = (f"Error: Image file not found at {image_path}.", None)
+                continue
+            try:
+                pil_image = Image.open(image_path)
+                if pil_image.mode != 'RGB':
+                    pil_image = pil_image.convert('RGB')
+                pil_images_to_process.append((i, pil_image))
+            except Exception as e:
+                logger.error(f"Error loading image {image_path}: {str(e)}")
+                results[i] = (f"Error: Failed to load image {image_path}: {str(e)}.", None)
+        
+        actual_pil_images = [img for _, img in pil_images_to_process]
+        original_indices_for_processing = [idx for idx, _ in pil_images_to_process]
+
+        if not actual_pil_images:
+            return [res if res is not None else ("Error: No valid images to process.", None) for res in results]
+
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE, process_vision_info_fn]):
+            logger.info("Using fallback CLIP model for batch image analysis.")
+            clip_batch_results = self._analyze_batch_with_clip(actual_pil_images, quality)
+            for i, res_tuple in enumerate(clip_batch_results):
+                original_idx = original_indices_for_processing[i]
+                results[original_idx] = res_tuple
+            return [res if res is not None else ("Error: Fallback processing issue.", None) for res in results]
+
+        # --- Qwen Batch Processing ---
+        texts_for_template_batch: List[str] = []
+        processed_image_inputs_batch: List[Any] = [] 
+        
+        # Keep track of original indices that successfully make it through Qwen pre-processing
+        valid_original_indices_for_qwen_output: List[int] = []
+
+        for i, pil_image in enumerate(actual_pil_images):
+            current_original_idx = original_indices_for_processing[i]
+            instruction = "Describe the image in English."
+            current_messages = [
+                {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
+            ]
+            
+            try:
+                text_for_template = self.tokenizer.apply_chat_template(current_messages, tokenize=False, add_generation_prompt=True)
+                img_inputs_for_current_msg, _ = process_vision_info_fn(current_messages)
+                
+                if img_inputs_for_current_msg and len(img_inputs_for_current_msg) == 1:
+                    texts_for_template_batch.append(text_for_template)
+                    processed_image_inputs_batch.extend(img_inputs_for_current_msg) 
+                    valid_original_indices_for_qwen_output.append(current_original_idx)
+                else:
+                    err_msg = f"Error: Qwen pre-processing failed for {image_paths[current_original_idx]} (unexpected output from process_vision_info_fn)."
+                    logger.warning(err_msg)
+                    results[current_original_idx] = (err_msg, None)
+            except Exception as e:
+                err_msg = f"Error: Qwen pre-processing failed for {image_paths[current_original_idx]} ({str(e)})."
+                logger.error(err_msg)
+                results[current_original_idx] = (err_msg, None)
+
+        if not texts_for_template_batch:
+            logger.info("No images were successfully pre-processed for Qwen batch.")
+            return [res if res is not None else ("Error: Qwen pre-processing failed for all images.", None) for res in results]
+
+        try:
+            inputs = self.processor(
+                text=texts_for_template_batch,
+                images=processed_image_inputs_batch,
+                videos=None, 
+                padding=True,
+                return_tensors="pt",
+            ).to(self.device)
+
+            generation_params = {"max_new_tokens": 128, "do_sample": True, "temperature": 0.7, "top_p": 0.9}
+            if quality == "detailed":
+                generation_params.update({"max_new_tokens": 256, "temperature": 0.6})
+            elif quality == "creative":
+                generation_params.update({"max_new_tokens": 200, "temperature": 0.8, "top_p": 0.95})
+
+            with torch.inference_mode():
+                generated_ids = self.model.generate(**inputs, **generation_params)
+            
+            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+            captions_batch_list = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            
+            model_name_str = "Qwen2.5-VL (non-AWQ)"
+            for i, caption_str in enumerate(captions_batch_list):
+                clean_caption = self.clean_output(caption_str)
+                description = f"Description: {clean_caption}\n\nGenerated by: {model_name_str}"
+                current_original_idx = valid_original_indices_for_qwen_output[i]
+                results[current_original_idx] = (description, clean_caption)
+
+        except Exception as e:
+            err_msg_batch = f"Error: Qwen batch generation failed ({str(e)})."
+            logger.error(err_msg_batch)
+            for original_idx in valid_original_indices_for_qwen_output:
+                if results[original_idx] is None: # Only update if not already set by individual pre-processing error
+                     results[original_idx] = (err_msg_batch, None)
+        
+        return [res if res is not None else ("Error: Unknown processing issue.", None) for res in results]
+
     def _analyze_with_clip(self, image: Image.Image, quality: str = "standard") -> Tuple[str, Optional[str]]:
         logger.info("Using CLIP fallback for image analysis (invoked from _analyze_with_clip)")
         try:
@@ -255,7 +371,7 @@ class QwenModel(BaseVisionModel):
                     getattr(self, '_using_fallback', False)):
                 
                 fallback_model_id = "openai/clip-vit-base-patch32"
-                clip_dtype_to_use = self.torch_dtype if self.device.type == 'cuda' else torch.float32
+                clip_dtype_to_use = self.torch_dtype if self.device.startswith('cuda') else torch.float32
                 logger.info(f"Loading/Re-loading CLIP model for fallback: {fallback_model_id} with dtype: {clip_dtype_to_use} on device: {self.device}")
                 
                 self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=clip_dtype_to_use).to(self.device)
@@ -267,7 +383,7 @@ class QwenModel(BaseVisionModel):
             inputs = self.processor(
                 text=["a photo of a landscape", "a portrait", "a photo of food", 
                       "a photo of an animal", "a photo of a building", "a photo of people", "an abstract image", "a drawing or illustration"],
-                images=image,
+                images=image, # Single image for this method
                 return_tensors="pt",
                 padding=True
             ).to(self.device)
@@ -284,25 +400,99 @@ class QwenModel(BaseVisionModel):
             top_category = scores[0][0]
             confidence = scores[0][1] * 100
             
+            caption_str = ""
             if quality == "detailed":
-                other_elements = [f"{cat} ({s[1]*100:.1f}%)" for i, (cat, s) in enumerate(scores[1:3])]
-                caption = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
-                if other_elements: caption += f"It may also contain elements of {' and '.join(other_elements)}."
+                other_elements = [f"{cat} ({s[1]*100:.1f}%)" for i, (s_cat, s_prob) in enumerate(scores[1:3])] # Corrected variable names
+                caption_str = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
+                if other_elements: caption_str += f"It may also contain elements of {' and '.join(other_elements)}."
             elif quality == "creative":
-                caption = f"A captivating {top_category} scene. "
-                if top_category == "landscape": caption += "The natural beauty unfolds, inviting exploration."
-                elif top_category == "portrait": caption += "The subject's presence tells a story through expression."
-                elif top_category == "animal": caption += "The creature's character is a compelling focal point."
-                else: caption += "The composition is intriguing."
+                caption_str = f"A captivating {top_category} scene. "
+                if top_category == "landscape": caption_str += "The natural beauty unfolds, inviting exploration."
+                elif top_category == "portrait": caption_str += "The subject's presence tells a story through expression."
+                elif top_category == "animal": caption_str += "The creature's character is a compelling focal point."
+                else: caption_str += "The composition is intriguing."
             else:  # standard
-                caption = f"This image shows a {top_category}."
+                caption_str = f"This image shows a {top_category}."
                 
-            description = f"Description: {caption}\n\nGenerated by: CLIP (Fallback Mode)"
-            return description, caption
+            description = f"Description: {caption_str}\n\nGenerated by: CLIP (Fallback Mode)"
+            return description, caption_str
             
         except Exception as e:
             logger.error(f"Error in CLIP fallback analysis: {str(e)}")
             return f"Image analysis failed with CLIP fallback. Error: {str(e)}", None
+
+    def _analyze_batch_with_clip(self, pil_images: List[Image.Image], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+        if not pil_images:
+            return []
+        
+        logger.info(f"Using CLIP fallback for batch analysis of {len(pil_images)} images.")
+        batch_results: List[Tuple[str, Optional[str]]] = []
+
+        try:
+            global CLIPModel, CLIPProcessor # Ensure they are accessible
+            if CLIPModel is None or CLIPProcessor is None:
+                from transformers import CLIPProcessor as DynamicCLIPProcessor, CLIPModel as DynamicCLIPModel
+                CLIPModel = DynamicCLIPModel 
+                CLIPProcessor = DynamicCLIPProcessor
+                if CLIPModel is None or CLIPProcessor is None:
+                    logger.error("Failed to import CLIP models for batch fallback.")
+                    return [("Error: CLIP Fallback components not available.", None)] * len(pil_images)
+            
+            if not (hasattr(self, 'model') and isinstance(self.model, CLIPModel) and \
+                    hasattr(self, 'processor') and isinstance(self.processor, CLIPProcessor) and \
+                    getattr(self, '_using_fallback', False)):
+                fallback_model_id = "openai/clip-vit-base-patch32"
+                clip_dtype_to_use = self.torch_dtype if self.device.startswith('cuda') else torch.float32
+                self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=clip_dtype_to_use).to(self.device)
+                self.processor = CLIPProcessor.from_pretrained(fallback_model_id)
+                self._using_fallback = True
+            
+            text_prompts = ["a photo of a landscape", "a portrait", "a photo of food", 
+                            "a photo of an animal", "a photo of a building", "a photo of people", 
+                            "an abstract image", "a drawing or illustration"]
+            
+            inputs = self.processor(
+                text=text_prompts,
+                images=pil_images, # Pass list of PIL images
+                return_tensors="pt",
+                padding=True
+            ).to(self.device)
+            
+            with torch.inference_mode():
+                outputs = self.model(**inputs)
+                
+            logits_per_image = outputs.logits_per_image # Shape: (batch_size, num_text_prompts)
+            probs_batch = logits_per_image.softmax(dim=1).tolist() # List of lists of probabilities
+            
+            categories = ["landscape", "portrait", "food", "animal", "building", "people", "abstract", "illustration"]
+            
+            for probs_single_image in probs_batch:
+                scores = sorted(list(zip(categories, probs_single_image)), key=lambda x: x[1], reverse=True)
+                top_category = scores[0][0]
+                confidence = scores[0][1] * 100
+                
+                caption_str = ""
+                if quality == "detailed":
+                    other_elements = [f"{cat} ({s_prob*100:.1f}%)" for cat, s_prob in scores[1:3]]
+                    caption_str = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
+                    if other_elements: caption_str += f"It may also contain elements of {' and '.join(other_elements)}."
+                elif quality == "creative":
+                    caption_str = f"A captivating {top_category} scene. "
+                    if top_category == "landscape": caption_str += "The natural beauty unfolds, inviting exploration."
+                    elif top_category == "portrait": caption_str += "The subject's presence tells a story through expression."
+                    elif top_category == "animal": caption_str += "The creature's character is a compelling focal point."
+                    else: caption_str += "The composition is intriguing."
+                else:  # standard
+                    caption_str = f"This image shows a {top_category}."
+                
+                description = f"Description: {caption_str}\n\nGenerated by: CLIP (Fallback Mode)"
+                batch_results.append((description, caption_str))
+                
+            return batch_results
+                
+        except Exception as e:
+            logger.error(f"Error in CLIP batch fallback analysis: {str(e)}")
+            return [(f"Image analysis failed with CLIP fallback. Error: {str(e)}", None)] * len(pil_images)
 
     def _preprocess_image(self, image: Image.Image) -> Any:
         logger.debug("QwenModel._preprocess_image called, but typically handled by processor/tokenizer.")

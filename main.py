@@ -144,6 +144,7 @@ except Exception as e:
     except Exception as dummy_error:
         logger.error(f"Failed to import dummy Florence2Model: {str(dummy_error)}")
         Florence2Model = None
+# logger.warning("Florence2Model loading is currently disabled for troubleshooting.")
 
 try:
     logger.info("Attempting to import JanusModel...")
@@ -469,7 +470,7 @@ class ModelManager:
                 messagebox.showerror("Model Error", error_message)
                 
                 # Ask if user wants to try another model
-                fallback_options = [m for m in ["qwen", "janus", "florence2"] if m != model_name.lower()]
+                fallback_options = [m for m in ["florence2", "qwen", "janus"] if m != model_name.lower()]
                 if fallback_options:
                     fallback_message = f"Would you like to try the {fallback_options[0]} model instead?"
                     if messagebox.askyesno("Try Alternative Model", fallback_message):
@@ -582,16 +583,31 @@ class ReviewGUI:
         self.rejected_dir = Path(rejected_dir)
         self.trigger_word = trigger_word
         
+        # Default to qwen if florence2 was selected initially and is now disabled
+        # self.model_name = model_name if model_name.lower() != "florence2" else "qwen" # Keep original logic
         self.model_name = model_name
+        logger.info(f"Initial model set to: {self.model_name}")
+        
         self.model_manager = ModelManager()
         try:
-            self.model = self.model_manager.get_model(model_name)
+            self.model = self.model_manager.get_model(self.model_name)
         except Exception as e:
-            logger.error(f"Failed to initialize model {model_name}: {str(e)}")
-            messagebox.showerror("Error", f"Failed to initialize model {model_name}. Falling back to Florence2.")
-            self.model_name = "florence2"
-            self.model = self.model_manager.get_model("florence2")
-        
+            logger.error(f"Failed to initialize model {self.model_name}: {str(e)}")
+            # Fallback to qwen or janus if the initial choice (even after adjustment) fails
+            if self.model_name == "qwen":
+                logger.warning("Falling back to Janus model due to Qwen initialization failure.")
+                self.model_name = "janus"
+            else: # if initial was janus and it failed, try qwen
+                logger.warning("Falling back to Qwen model due to Janus initialization failure.")
+                self.model_name = "qwen"
+            try:
+                self.model = self.model_manager.get_model(self.model_name)
+            except Exception as final_fallback_e:
+                logger.critical(f"All models failed to load: {final_fallback_e}")
+                messagebox.showerror("Critical Error", "All available models failed to load. The application cannot continue.")
+                self.root.quit() # Exit if no model can be loaded
+                return # Stop further initialization
+
         self.dataset_prep = DatasetPreparator()
         
         # Create directories
@@ -1247,43 +1263,59 @@ class ReviewGUI:
             # Update filename
             self.filename_label.config(text=str(img_path.name))
             
+            description = "Error: Analysis not performed." # Default in case of issues
+            clean_caption = None
+
             try:
                 # Check cache first
                 if str(img_path) in self.image_cache:
                     logger.info(f"Using cached analysis for {img_path}")
                     description, clean_caption = self.image_cache[str(img_path)]
-                else:
-                    # Show status during analysis
+                else: 
+                    # Image not in cache, so analyze it
                     self.status_label.config(text=f"Analyzing image with {self.model_name} model...")
                     self.root.update()  # Refresh UI to show status
                     
                     try:
                         # Update model label to show which one is being used
                         self.model_label.config(text=f"{self.model_name} (analyzing...)")
-                        self.root.update()  # Refresh UI to show status
+                        self.root.update()
                         
-                        # Analyze the image
-                        description, clean_caption = self.model.analyze_image(str(img_path))
+                        # Analyze the image using analyze_images_batch for consistency
+                        # Pass quality from the GUI
+                        batch_results = self.model.analyze_images_batch([str(img_path)], quality=self.quality_var.get())
+                        
+                        if batch_results and len(batch_results) == 1:
+                            description, clean_caption = batch_results[0]
+                        else:
+                            logger.error(f"Batch analysis for single image {img_path} returned unexpected result: {batch_results}")
+                            description = f"Error: Analysis failed for {img_path.name}."
+                            clean_caption = None
                         
                         # Update UI to show success
                         self.model_label.config(text=self.model_name)
                         
                         # Cache the result
-                        self.image_cache[str(img_path)] = (description, clean_caption)
+                        if description and not description.startswith("Error:"): # Only cache successful analysis
+                            self.image_cache[str(img_path)] = (description, clean_caption)
+
                     except Exception as analyze_error:
-                        # Update model label to show error
+                        logger.error(f"Error during model analysis for {img_path.name}: {str(analyze_error)}")
                         self.model_label.config(text=f"{self.model_name} (error)")
-                        raise analyze_error
+                        description = f"Error analyzing {img_path.name} with {self.model_name}: {str(analyze_error)}"
+                        clean_caption = None
+                        # Do not raise here, allow UI to update with error message
                     
-                self.status_label.config(text="Analysis complete")
-            except Exception as e:
-                logger.error(f"Error analyzing image: {str(e)}")
-                description = f"Error analyzing image with {self.model_name} model:\n\n{str(e)}"
-                clean_caption = None
-                self.status_label.config(text=f"Error analyzing image")
-                messagebox.showwarning("Warning", f"Error analyzing image: {str(e)}")
+                self.status_label.config(text="Analysis complete" if not description.startswith("Error:") else "Analysis failed")
             
-            if self.trigger_word and clean_caption:
+            except Exception as e: # Catch errors from cache check or general logic before model call
+                logger.error(f"Error preparing for image analysis ({img_path.name}): {str(e)}")
+                description = f"Error preparing for analysis: {str(e)}"
+                clean_caption = None
+                self.status_label.config(text="Error preparing analysis")
+                messagebox.showwarning("Warning", f"Error preparing for analysis: {str(e)}")
+            
+            if self.trigger_word and clean_caption: # Ensure clean_caption is not None
                 clean_caption = f"{self.trigger_word}, {clean_caption}"
             
             # Load and display image
@@ -1294,56 +1326,55 @@ class ReviewGUI:
             self.dimensions_label.config(text=f"{img_width} × {img_height}")
             
             # Calculate display size to maintain aspect ratio and center
-            max_width, max_height = 800, 600
+            max_width, max_height = 800, 600 # Consider making these configurable
             
-            # Scale down if needed, maintaining aspect ratio
             scale_w = max_width / img_width if img_width > max_width else 1
             scale_h = max_height / img_height if img_height > max_height else 1
             scale = min(scale_w, scale_h)
             
-            if scale < 1:
+            if scale < 1: # Only resize if image is larger than display area
                 new_width, new_height = int(img_width * scale), int(img_height * scale)
                 img = img.resize((new_width, new_height), Image.LANCZOS)
             
-            # Convert to PhotoImage
             photo = ImageTk.PhotoImage(img)
             
-            # Update the image label
             self.img_label.configure(image=photo)
-            self.img_label.image = photo  # Keep a reference
+            self.img_label.image = photo
             
-            # Center the image in the container
-            self.img_label.place(
-                relx=0.5, rely=0.5,
-                anchor='center'
-            )
+            self.img_label.place(relx=0.5, rely=0.5, anchor='center')
             
-            # Update caption with styled text and highlighting
             self.caption_text.config(state=tk.NORMAL)
-            self.apply_text_highlighting(self.caption_text, description)
-            self.caption_text.config(state=tk.NORMAL)  # Keep editable
+            self.apply_text_highlighting(self.caption_text, description) # Display description (which might be an error)
+            self.caption_text.config(state=tk.NORMAL)
             
-            # Save analysis results
-            data = {"results": {"caption": description}}
-            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+            # Save analysis results (even if it's an error message, for review)
+            data_to_save = {"results": {"caption": description}}
+            if clean_caption: # Only add clean_caption if it exists
+                data_to_save["results"]["clean_caption_for_txt"] = clean_caption
+
+            json_path.write_text(json.dumps(data_to_save, indent=2), encoding='utf-8')
             
-            if clean_caption:
+            if clean_caption: # Only create .txt if clean_caption is valid
                 self.dataset_prep.create_caption_file(str(img_path), clean_caption)
             
-            # Update window title
             self.root.title(f"Multi-Vision Toolkit - {img_path.name} ({self.current + 1}/{len(self.items)})")
             
-            # Update status
-            self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
+            if not description.startswith("Error:"):
+                 self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
             
-            # Preload next few images for faster navigation
             self._preload_next_images()
             
-        except Exception as e:
-            logger.error(f"Error showing current item: {str(e)}")
+        except Exception as e: # Catch-all for show_current method
+            logger.error(f"Critical error in show_current for {self.items[self.current][2].name if self.items else 'N/A'}: {str(e)}")
             self.status_label.config(text=f"Error displaying image: {str(e)}")
-            raise
-            
+            # Optionally, clear display or show a generic error image
+            self.img_label.config(image="")
+            self.caption_text.config(state=tk.NORMAL)
+            self.caption_text.delete(1.0, tk.END)
+            self.caption_text.insert(tk.END, f"Failed to display image or analysis: {str(e)}")
+            self.caption_text.config(state=tk.DISABLED)
+            # raise # Re-raise if it's a critical error that should stop the app or be handled higher up
+
     def _preload_next_images(self):
         """Preload the next few images for faster navigation"""
         # Get next 3 images to preload
@@ -1744,42 +1775,90 @@ class ReviewGUI:
         
         def worker():
             """Worker thread for processing images"""
-            while not process_queue.empty() and not cancel_flag[0]:
-                try:
-                    # Get next item
-                    base_name, json_path, img_path = process_queue.get_nowait()
-                    
-                    # Update status
-                    status_label.config(text=f"Processing: {img_path.name}")
-                    
-                    # Skip if already in cache
-                    if str(img_path) in self.image_cache:
-                        description, clean_caption = self.image_cache[str(img_path)]
-                    else:
-                        # Analyze image
-                        description, clean_caption = self.model.analyze_image(str(img_path))
-                        self.image_cache[str(img_path)] = (description, clean_caption)
-                    
-                    # Apply trigger word if needed
-                    if self.trigger_word and clean_caption:
-                        clean_caption = f"{self.trigger_word}, {clean_caption}"
-                    
-                    # Save analysis results
-                    data = {"results": {"caption": description}}
-                    json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
-                    
-                    if clean_caption:
-                        self.dataset_prep.create_caption_file(str(img_path), clean_caption)
-                    
-                    # Update progress
-                    processed[0] += 1
-                    progress_var.set(processed[0])
-                    
-                except queue.Empty:
-                    break
-                except Exception as e:
-                    logger.error(f"Error in batch processing: {str(e)}")
+            # Determine batch size (e.g., 4 or 8, depending on typical memory)
+            # For simplicity, let's use a fixed batch size for now.
+            # This could be made configurable or dynamic based on model/memory.
+            BATCH_SIZE = 4 
             
+            while not process_queue.empty() and not cancel_flag[0]:
+                current_batch_items = []
+                current_batch_paths_str = []
+                
+                # Collect a batch of items from the queue
+                for _ in range(BATCH_SIZE):
+                    if process_queue.empty() or cancel_flag[0]:
+                        break
+                    try:
+                        item = process_queue.get_nowait()
+                        current_batch_items.append(item)
+                        current_batch_paths_str.append(str(item[2])) # item[2] is img_path
+                    except queue.Empty:
+                        break # Should not happen if process_queue.empty() is checked first
+                
+                if not current_batch_items:
+                    continue
+                status_label.config(text=f"Processing batch of {len(current_batch_items)} images...")
+
+                try:
+                    # Check cache for items in the current batch
+                    # and prepare a sub-batch of items that need actual processing
+                    items_needing_analysis = []
+                    paths_needing_analysis_str = []
+                    
+                    for item_idx, (base_name, json_path, img_path) in enumerate(current_batch_items):
+                        if str(img_path) in self.image_cache:
+                            description, clean_caption = self.image_cache[str(img_path)]
+                            # Save already cached results
+                            data = {"results": {"caption": description}}
+                            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                            if self.trigger_word and clean_caption:
+                                clean_caption = f"{self.trigger_word}, {clean_caption}"
+                            if clean_caption:
+                                self.dataset_prep.create_caption_file(str(img_path), clean_caption)
+                            processed[0] += 1 # Count as processed
+                        else:
+                            items_needing_analysis.append(current_batch_items[item_idx])
+                            paths_needing_analysis_str.append(str(img_path))
+
+                    if paths_needing_analysis_str:
+                        # Analyze the sub-batch of images that were not in cache
+                        batch_analysis_results = self.model.analyze_images_batch(paths_needing_analysis_str, quality=self.quality_var.get())
+                        
+                        for i, (description, clean_caption) in enumerate(batch_analysis_results):
+                            # Get original item details for the analyzed image
+                            original_item_base_name, original_item_json_path, original_item_img_path = items_needing_analysis[i]
+                            
+                            self.image_cache[str(original_item_img_path)] = (description, clean_caption)
+                            
+                            # Apply trigger word if needed
+                            if self.trigger_word and clean_caption:
+                                clean_caption = f"{self.trigger_word}, {clean_caption}"
+                            
+                            # Save analysis results
+                            data = {"results": {"caption": description}}
+                            original_item_json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                            
+                            if clean_caption:
+                                self.dataset_prep.create_caption_file(str(original_item_img_path), clean_caption)
+                            processed[0] += 1 # Count as processed
+                    
+                    # Update overall progress bar
+                    progress_var.set(processed[0])
+
+                except Exception as e:
+                    logger.error(f"Error in batch processing worker for batch starting with {current_batch_paths_str[0] if current_batch_paths_str else 'N/A'}: {str(e)}")
+                    # Mark items in this failed batch as errored if not already processed
+                    for base_name, json_path, img_path in current_batch_items:
+                        if str(img_path) not in self.image_cache: # Avoid overwriting successfully cached items
+                             # Create a minimal error entry
+                            error_description = f"Error during batch processing: {str(e)}"
+                            data = {"results": {"caption": error_description}}
+                            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                            self.image_cache[str(img_path)] = (error_description, None) # Cache error state
+                            processed[0] += 1 # Count as processed (with error)
+                    progress_var.set(processed[0])
+
+
             # Check if we're done or canceled
             if processed[0] >= total or cancel_flag[0]:
                 progress_window.after(100, progress_window.destroy)
@@ -1789,8 +1868,13 @@ class ReviewGUI:
                     self.status_label.config(text=f"Batch processing complete. {processed[0]}/{total} images processed.")
         
         # Start worker threads (use number of CPU cores or max 4)
-        import multiprocessing
-        num_workers = min(multiprocessing.cpu_count(), 4)
+        # For batching, a single worker thread might be better to avoid overwhelming the GPU
+        # if the model's batch method is efficient. If model.analyze_images_batch is internally parallel,
+        # then multiple workers here could lead to contention.
+        # Let's stick to one worker for now, assuming the model's batch method handles parallelism.
+        # num_workers = min(multiprocessing.cpu_count(), 4) 
+        num_workers = 1 # Using a single worker for batch processing
+        logger.info(f"Starting {num_workers} worker thread(s) for batch processing.")
         for _ in range(num_workers):
             threading.Thread(target=worker, daemon=True).start()
 
@@ -1805,14 +1889,19 @@ def main():
     
     try:
         args = parser.parse_args()
-        logger.info(f"Starting application with model: {args.model}")
+        selected_model = args.model
+        # if selected_model.lower() == 'florence2':
+        #     logger.warning("Florence2 model was selected via CLI but is currently disabled. Defaulting to Qwen.")
+        #     selected_model = 'qwen'
+            
+        logger.info(f"Starting application with model: {selected_model}")
         
         app = ReviewGUI(
             args.review_dir, 
             args.approved_dir, 
             args.rejected_dir,
             args.trigger_word,
-            args.model
+            selected_model # Use the potentially adjusted selected_model here
         )
         app.root.mainloop()
     except Exception as e:

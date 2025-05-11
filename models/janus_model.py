@@ -4,7 +4,7 @@ import logging
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor, BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import os
 from pathlib import Path
 
@@ -153,6 +153,27 @@ class JanusModel(BaseVisionModel):
         except Exception as e:
             logger.error(f"Error analyzing image: {str(e)}")
             return "Error: An unexpected error occurred.", None
+
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+        """
+        Analyze a batch of images using the BLIP model by processing them individually.
+        
+        Args:
+            image_paths (List[str]): List of paths to image files
+            quality (str): Quality level - "standard", "detailed", or "creative"
+            
+        Returns:
+            List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
+        """
+        if not image_paths:
+            return []
+        
+        results = []
+        for image_path in image_paths:
+            # Call the existing single-image analysis method
+            description, clean_caption = self.analyze_image(image_path, quality=quality)
+            results.append((description, clean_caption))
+        return results
 
     @classmethod
     def is_available(cls) -> bool:

@@ -1,11 +1,11 @@
 torch>=2.6.0
 torchvision>=0.17.0
 # For Qwen/Qwen2.5-VL-3B-Instruct, latest transformers from git is recommended:
-# pip install git+https://github.com/huggingface/transformers.git --upgrade
+git+https://github.com/huggingface/transformers.git
 # For stable releases, you can use a specific version like:
-transformers>=4.40.0 # Or a more recent stable version if Qwen class is included
+# transformers>=4.40.0 # Or a more recent stable version if Qwen class is included
 Pillow>=9.0.0
-timm>=0.9.12
+timm==0.9.12
 einops>=0.7.0
 python-dotenv>=1.0.0
 opencv-python>=4.8.0
