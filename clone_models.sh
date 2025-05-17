@@ -197,6 +197,7 @@ fi
 
 # Clone models
 clone_with_retry "Florence-2-base" "microsoft/Florence-2-base" "Florence-2-base"
+clone_with_retry "Janus-Pro-1B model" "deepseek-ai/Janus-Pro-1B" "deepseek-ai-Janus-Pro-1B"
 clone_with_retry "BLIP model" "Salesforce/blip-image-captioning-base" "blip-image-captioning-base"
 clone_with_retry "Qwen model" "Qwen/Qwen2.5-VL-3B-Instruct-AWQ" "Qwen2.5-VL-3B-Instruct-AWQ"
 
