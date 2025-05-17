@@ -188,6 +188,46 @@ class QwenModel(BaseVisionModel):
             logger.error(f"Failed to initialize Qwen model: {str(e)}")
             self._load_clip_as_fallback(reason=f"Qwen (non-AWQ) load failed: {e}")
 
+    def get_instruction_for_quality(self, quality: str) -> str:
+        """Get appropriate instruction based on quality setting"""
+        if quality == "standard":
+            return "Describe this image briefly and concisely."
+        elif quality == "detailed":
+            return "Provide a detailed description of this image, including objects, people, colors, background, and any notable features. Be comprehensive."
+        elif quality == "creative":
+            return "Describe this image in a creative, imaginative way. Use evocative language and vivid descriptions. Feel free to interpret what you see."
+        return "Describe this image."  # Default fallback
+    
+    def get_generation_params(self, quality: str) -> dict:
+        """Get generation parameters based on quality mode"""
+        if quality == "standard":
+            return {
+                "max_new_tokens": 75,      # Keep standard output concise
+                "temperature": 0.7,        # Balanced randomness
+                "top_p": 0.9,              # Standard filtering
+                "do_sample": True
+            }
+        elif quality == "detailed":
+            return {
+                "max_new_tokens": 250,     # Much longer output
+                "temperature": 0.6,        # Slightly lower temperature for factuality
+                "top_p": 0.85,             # Slightly stricter filtering
+                "repetition_penalty": 1.2, # Discourage repetition
+                "do_sample": True,
+                "num_beams": 3             # Add beam search for better quality
+            }
+        elif quality == "creative":
+            return {
+                "max_new_tokens": 175,     # Medium length for creativity
+                "temperature": 0.9,        # Higher temperature for more creativity
+                "top_p": 0.95,             # Higher top_p for more variety
+                "repetition_penalty": 1.0, # Normal repetition handling
+                "do_sample": True,
+                "top_k": 40                # Add top_k sampling for creative diversity
+            }
+        # Default to standard if unknown quality provided
+        return {"max_new_tokens": 75, "temperature": 0.7, "top_p": 0.9, "do_sample": True}
+
     def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
         if not os.path.exists(image_path):
             logger.error(f"Image file not found: {image_path}")
@@ -205,10 +245,8 @@ class QwenModel(BaseVisionModel):
             logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             return self._analyze_with_clip(pil_image, quality)
 
-        # Use a very direct and simple English instruction, similar to Qwen-VL-Chat's "这是什么?" (What is this?)
-        # but adapted for captioning and English.
-        # The 'quality' parameter will be ignored for this test to ensure the simplest possible prompt.
-        instruction = "Describe the image in English."
+        # Get quality-specific instruction
+        instruction = self.get_instruction_for_quality(quality)
         
         messages = [
             {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
@@ -226,17 +264,18 @@ class QwenModel(BaseVisionModel):
                 return_tensors="pt",
             ).to(self.device)
 
-            generation_params = {"max_new_tokens": 128, "do_sample": True, "temperature": 0.7, "top_p": 0.9}
-            if quality == "detailed":
-                generation_params.update({"max_new_tokens": 256, "temperature": 0.6})
-            elif quality == "creative":
-                generation_params.update({"max_new_tokens": 200, "temperature": 0.8, "top_p": 0.95})
-
+            # Use quality-specific generation parameters
+            generation_params = self.get_generation_params(quality)
+            
             with torch.inference_mode():
                 generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)]
-            caption = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+            caption = self.processor.batch_decode(
+                generated_ids_trimmed, 
+                skip_special_tokens=True, 
+                clean_up_tokenization_spaces=True  # Try setting to True to help with encoding issues
+            )[0]
             caption = self.clean_output(caption)
             
             model_name = "Qwen2.5-VL (non-AWQ)"
@@ -291,7 +330,7 @@ class QwenModel(BaseVisionModel):
 
         for i, pil_image in enumerate(actual_pil_images):
             current_original_idx = original_indices_for_processing[i]
-            instruction = "Describe the image in English."
+            instruction = self.get_instruction_for_quality(quality)
             current_messages = [
                 {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
             ]
@@ -326,17 +365,18 @@ class QwenModel(BaseVisionModel):
                 return_tensors="pt",
             ).to(self.device)
 
-            generation_params = {"max_new_tokens": 128, "do_sample": True, "temperature": 0.7, "top_p": 0.9}
-            if quality == "detailed":
-                generation_params.update({"max_new_tokens": 256, "temperature": 0.6})
-            elif quality == "creative":
-                generation_params.update({"max_new_tokens": 200, "temperature": 0.8, "top_p": 0.95})
-
+            # Use quality-specific generation parameters
+            generation_params = self.get_generation_params(quality)
+            
             with torch.inference_mode():
                 generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-            captions_batch_list = self.processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)
+            captions_batch_list = self.processor.batch_decode(
+                generated_ids_trimmed, 
+                skip_special_tokens=True, 
+                clean_up_tokenization_spaces=True  # Try setting to True to help with encoding issues
+            )
             
             model_name_str = "Qwen2.5-VL (non-AWQ)"
             for i, caption_str in enumerate(captions_batch_list):
@@ -353,6 +393,57 @@ class QwenModel(BaseVisionModel):
                      results[original_idx] = (err_msg_batch, None)
         
         return [res if res is not None else ("Error: Unknown processing issue.", None) for res in results]
+
+    def get_clip_description_for_quality(self, top_category: str, scores: list, quality: str = "standard") -> str:
+        """Get appropriately detailed CLIP description based on quality setting"""
+        confidence = scores[0][1] * 100
+        
+        if quality == "detailed":
+            other_elements = [f"{s_cat} ({s_prob*100:.1f}%)" for i, (s_cat, s_prob) in enumerate(scores[1:3])]
+            caption_str = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
+            if other_elements: 
+                caption_str += f"It may also contain elements of {' and '.join(other_elements)}."
+                
+            # Add more detailed description based on category
+            if top_category == "landscape":
+                caption_str += " The landscape features natural elements with distinct composition and lighting."
+            elif top_category == "portrait":
+                caption_str += " The portrait shows a subject with distinct facial features against a complementary background."
+            elif top_category == "food":
+                caption_str += " The food is artfully presented with appealing colors and textures."
+            elif top_category == "animal":
+                caption_str += " The animal is captured in its environment with characteristic features visible."
+            elif top_category == "building":
+                caption_str += " The architectural structure displays distinctive design elements and proportions."
+            elif top_category == "people":
+                caption_str += " The individuals are engaged in activities that reveal their relationships and setting."
+            elif top_category == "abstract":
+                caption_str += " The abstract elements feature visual patterns, textures and color arrangements that create aesthetic interest."
+            elif top_category == "illustration":
+                caption_str += " The illustration demonstrates artistic technique with intentional stylistic choices."
+                
+        elif quality == "creative":
+            caption_str = f"A captivating {top_category} scene that draws the viewer in. "
+            if top_category == "landscape":
+                caption_str += "The natural beauty unfolds with layers of color and texture, inviting exploration beyond the visible boundaries."
+            elif top_category == "portrait":
+                caption_str += "The subject's presence tells a story through expression, with eyes that seem to hold hidden narratives and emotions."
+            elif top_category == "food":
+                caption_str += "A feast for the eyes as much as for the palate, with colors and textures that awaken the imagination."
+            elif top_category == "animal":
+                caption_str += "The creature's character is a compelling focal point, revealing the wild spirit that dwells within all living beings."
+            elif top_category == "building":
+                caption_str += "The structure stands as a testament to human creativity, its form both challenging and harmonizing with the surroundings."
+            elif top_category == "people":
+                caption_str += "Human moments frozen in time, each figure part of an unfolding story that invites countless interpretations."
+            elif top_category == "abstract":
+                caption_str += "Forms and colors dance together in a composition that speaks to emotions rather than literal representation."
+            elif top_category == "illustration":
+                caption_str += "The artist's vision manifests through deliberate strokes and stylistic choices that transport the viewer to imagined worlds."
+        else:  # standard
+            caption_str = f"This image shows a {top_category}."
+            
+        return caption_str
 
     def _analyze_with_clip(self, image: Image.Image, quality: str = "standard") -> Tuple[str, Optional[str]]:
         logger.info("Using CLIP fallback for image analysis (invoked from _analyze_with_clip)")
@@ -398,21 +489,9 @@ class QwenModel(BaseVisionModel):
             scores = sorted(list(zip(categories, probs)), key=lambda x: x[1], reverse=True)
             
             top_category = scores[0][0]
-            confidence = scores[0][1] * 100
             
-            caption_str = ""
-            if quality == "detailed":
-                other_elements = [f"{cat} ({s[1]*100:.1f}%)" for i, (s_cat, s_prob) in enumerate(scores[1:3])] # Corrected variable names
-                caption_str = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
-                if other_elements: caption_str += f"It may also contain elements of {' and '.join(other_elements)}."
-            elif quality == "creative":
-                caption_str = f"A captivating {top_category} scene. "
-                if top_category == "landscape": caption_str += "The natural beauty unfolds, inviting exploration."
-                elif top_category == "portrait": caption_str += "The subject's presence tells a story through expression."
-                elif top_category == "animal": caption_str += "The creature's character is a compelling focal point."
-                else: caption_str += "The composition is intriguing."
-            else:  # standard
-                caption_str = f"This image shows a {top_category}."
+            # Use quality-specific CLIP description generator
+            caption_str = self.get_clip_description_for_quality(top_category, scores, quality)
                 
             description = f"Description: {caption_str}\n\nGenerated by: CLIP (Fallback Mode)"
             return description, caption_str
@@ -469,21 +548,9 @@ class QwenModel(BaseVisionModel):
             for probs_single_image in probs_batch:
                 scores = sorted(list(zip(categories, probs_single_image)), key=lambda x: x[1], reverse=True)
                 top_category = scores[0][0]
-                confidence = scores[0][1] * 100
                 
-                caption_str = ""
-                if quality == "detailed":
-                    other_elements = [f"{cat} ({s_prob*100:.1f}%)" for cat, s_prob in scores[1:3]]
-                    caption_str = f"This image appears to be a {top_category} (confidence: {confidence:.1f}%). "
-                    if other_elements: caption_str += f"It may also contain elements of {' and '.join(other_elements)}."
-                elif quality == "creative":
-                    caption_str = f"A captivating {top_category} scene. "
-                    if top_category == "landscape": caption_str += "The natural beauty unfolds, inviting exploration."
-                    elif top_category == "portrait": caption_str += "The subject's presence tells a story through expression."
-                    elif top_category == "animal": caption_str += "The creature's character is a compelling focal point."
-                    else: caption_str += "The composition is intriguing."
-                else:  # standard
-                    caption_str = f"This image shows a {top_category}."
+                # Use quality-specific CLIP description generator
+                caption_str = self.get_clip_description_for_quality(top_category, scores, quality)
                 
                 description = f"Description: {caption_str}\n\nGenerated by: CLIP (Fallback Mode)"
                 batch_results.append((description, caption_str))

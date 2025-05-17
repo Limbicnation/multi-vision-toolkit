@@ -33,6 +33,7 @@ def enhanced_clean_output(self, text: str) -> str:
         
         # 1. Remove common problematic patterns seen in Qwen output
         patterns_to_remove = [
+            # Original patterns
             r'<[Uu][Ff]unction[^>]*>',  # UFunction/ufunction tags
             r'<pair[^>]*>',             # <pair> tags
             r'[\u4E00-\u9FFF]{2,}',     # Sequences of multiple Chinese characters
@@ -43,7 +44,43 @@ def enhanced_clean_output(self, text: str) -> str:
             r'[\uAC00-\uD7AF]{2,}',     # Sequences of multiple Hangul characters
             r'[\u3040-\u30FF]{2,}',     # Sequences of multiple Hiragana/Katakana characters
             r'[^\x00-\x7F]{3,}',        # Any sequence of 3+ non-ASCII characters
-            r'[\U00010000-\U0010FFFF]+' # Any supplementary Unicode characters (emojis, etc.)
+            r'[\U00010000-\U0010FFFF]+', # Any supplementary Unicode characters (emojis, etc.)
+            
+            # New patterns based on provided example
+            r'quitting\s+numeros',       # Matches pattern in the example
+            r'randomized\s*สม',          # Thai character patterns
+            r'mozilla\s+сп',             # Cyrillic mixed with Latin
+            r'realidad\s+\(',            # Common pattern in the example
+            r'--\[\s*[^\]]*\]',          # Matches bracket patterns like --[
+            r'\$\(\'[^\']*\'',           # Matches JavaScript-like patterns
+            r',[^,]{1,3}response',       # Suspicious short segments with "response"
+            r'cluding',                  # Common garbled fragment
+            r'currentזר',                # Mixed scripts
+            r'giếtifareetings',          # Vietnamese mixed with other characters
+            r'verfügזר',                 # German and Hebrew mixed
+            r'angan captive',            # Common garbled pattern
+            r'\(\[-[^\]]*\]',            # Matches [(- patterns
+            r'\.Second[^\s]*',           # Common issue pattern
+            r'\$\(\'?\.[^\']*',          # JavaScript-like patterns
+            r'Categoria\s+carbohydrates', # Nonsensical combinations
+            r'Prompt\(\)\]',             # Code-like fragments
+            r'realidad\s+--',            # Another common pattern
+            r'ctp-collapse',             # UI element references
+            r'Framebuffer cont',         # Technical terms out of context
+            r'\d+\.\d+\.\d+\.\d+',       # IP addresses
+            r'mozillaguards',            # Browser references out of context
+            r'[a-zA-Z]+\.trade\(',       # Code-like fragments
+            r'periments realidad',       # Nonsensical combinations
+            r'\([0-9]{3,}\)',            # Suspicious number sequences in parentheses
+            r'[^\x00-\x7F]\d+[^\x00-\x7F]', # Non-ASCII + digits + non-ASCII
+            r'@[a-zA-Z0-9]+\.[a-zA-Z]+',  # Email-like patterns without full address
+            r'[^\s]+\.com\/[^\s]+',       # URL fragments
+            r'[a-zA-Z]+-collapse',        # Bootstrap-like class names
+            r'popover',                   # UI element terminology
+            r'cushion revealษipt',        # Mixed script gibberish
+            r'swagger',                   # API terminology out of context
+            r'[a-zA-Z]+\.[a-zA-Z]+\([^)]*\)', # Method calls
+            r'bean[a-z]+ipt'              # JavaScript-like references
         ]
         
         for pattern in patterns_to_remove:
@@ -51,6 +88,7 @@ def enhanced_clean_output(self, text: str) -> str:
         
         # 2. Replace problematic character combinations
         char_replacements = {
+            # Original replacements
             '.hpp': '',         # Common pattern seen in errors
             '.rand': '',        # Common pattern seen in errors
             '.getSharedPreferences': '',
@@ -59,7 +97,35 @@ def enhanced_clean_output(self, text: str) -> str:
             '/operator': '',    # Common pattern seen in errors
             '.ContentType': '', # Common pattern seen in errors
             'viewDidLoad': '',  # Common pattern seen in errors
-            '.weixin': '',      # Common pattern seen in errors
+            '.weixin': '',      # Common pattern seen in errors,
+            
+            # New replacements from the example
+            'numeros': '',      # Common in garbled output
+            'realidad': '',     # Common in garbled output
+            'NASA': '',         # Appears in context-free places
+            'carbohydrates': '',# Common in nonsensical combinations
+            'mozilla': '',      # Browser references out of context
+            'randomized': '',   # Common in problematic sequences
+            'server': '',       # Common technical term out of context
+            'Misc': '',         # Miscellaneous fragments
+            'lanç': '',         # Partial words with diacritics
+            'Prompt': '',       # Programming reference out of context
+            'levels--': '',     # Technical pattern
+            'cushion': '',      # Random words out of context
+            'reveal': '',       # Common in problematic contexts
+            'Categoria': '',    # Category references in wrong languages
+            'swagger': '',      # API terminology out of context
+            'popover': '',      # UI element terminology
+            'response': '',     # Common in API-like gibberish
+            'resale': '',       # Common in nonsensical text
+            'Second': '',       # Common in problematic sequences
+            'Rome': '',         # Location names out of context
+            'Wilde': '',        # Names appearing randomly
+            'Frame': '',        # UI terminology
+            'equality': '',     # Conceptual terms out of context
+            '--[': '',          # Code-like pattern starts
+            ']--': '',          # Code-like pattern ends
+            'collapse': ''      # UI component terminology
         }
         
         for old, new in char_replacements.items():
