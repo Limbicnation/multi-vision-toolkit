@@ -4,7 +4,7 @@ import logging
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor, BlipProcessor, BlipForConditionalGeneration
 from PIL import Image
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
 import os
 from pathlib import Path
 
@@ -69,17 +69,80 @@ class JanusModel(BaseVisionModel):
             logger.error(f"Failed to initialize model: {str(e)}")
             raise
 
-    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+    def get_prompt_for_quality(self, quality: str = "standard") -> str:
         """
-        Analyze an image using the BLIP model.
+        Get the appropriate prompt text for Janus/BLIP model based on quality.
         
         Args:
-            image_path (str): Path to the image file
-            quality (str): Quality level - "standard", "detailed", or "creative"
+            quality: Quality level - "standard", "detailed", or "creative"
+            
+        Returns:
+            str: Prompt text optimized for the quality mode
+        """
+        if quality == "detailed":
+            return "Provide a comprehensive and detailed description of this image. Include all visible elements, colors, positioning, and background details."
+        elif quality == "creative":
+            return "Create an imaginative and evocative description of this image. Use vivid language, metaphors, and creative interpretations."
+        else:  # standard
+            return "Describe this image in a concise way."
+    
+    def get_generation_params_for_quality(self, quality: str = "standard") -> dict:
+        """
+        Get the appropriate generation parameters for Janus/BLIP model based on quality.
+        
+        Args:
+            quality: Quality level - "standard", "detailed", or "creative"
+            
+        Returns:
+            dict: Generation parameters optimized for the quality mode
+        """
+        if quality == "detailed":
+            return {
+                "max_length": 100,       # Longer for detailed descriptions
+                "min_length": 60,        # Ensure a minimum length
+                "num_beams": 7,          # More beams for higher quality
+                "temperature": 0.65,     # Lower temperature for factual output
+                "top_p": 0.92,           # Slightly restrictive filtering
+                "length_penalty": 1.5,   # Encourage longer outputs
+                "do_sample": False,      # Deterministic for factual details
+                "repetition_penalty": 1.2 # Avoid repetition
+            }
+        elif quality == "creative":
+            return {
+                "max_length": 90,        # Medium length
+                "min_length": 30,        # Lower minimum for more flexibility
+                "num_beams": 5,          # Fewer beams for more variety
+                "temperature": 1.1,      # Higher temperature for more creativity
+                "top_p": 0.97,           # Less restrictive top_p
+                "top_k": 60,             # Add top_k for diversity
+                "length_penalty": 0.8,   # Shorter outputs acceptable
+                "do_sample": True,       # Enable sampling for creativity
+                "repetition_penalty": 1.0 # No repetition penalty to allow stylistic repetition
+            }
+        else:  # standard
+            return {
+                "max_length": 50,        # Short, concise outputs
+                "min_length": 10,        # Very low minimum
+                "num_beams": 5,          # Standard beam count
+                "temperature": 0.7,      # Standard temperature
+                "top_p": 0.9,            # Standard top_p
+                "length_penalty": 1.0,   # Neutral length penalty
+                "do_sample": True,       # Some randomness
+                "repetition_penalty": 1.1 # Light repetition penalty
+            }
+    
+    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+        """
+        Analyze an image using the BLIP model with quality-specific settings.
+        
+        Args:
+            image_path: Path to the image file
+            quality: Quality level - "standard", "detailed", or "creative"
             
         Returns:
             Tuple[str, Optional[str]]: (description, clean_caption)
         """
+        logger.info(f"JanusModel using quality mode: '{quality}'")
         try:
             # Validate image path
             if not os.path.exists(image_path):
@@ -95,54 +158,45 @@ class JanusModel(BaseVisionModel):
                 logger.error(f"Error loading image {image_path}: {str(e)}")
                 return "Error: Failed to load or process image.", None
                 
-            # Generate caption
+            # Generate caption with quality-specific settings
             try:
-                # Prepare inputs
+                # Get quality-specific prompt and generation parameters
+                text_prompt = self.get_prompt_for_quality(quality)
+                generation_params = self.get_generation_params_for_quality(quality)
+                
+                # Prepare inputs with the quality-specific prompt
                 inputs = self.processor(
+                    text=text_prompt,
                     images=image, 
                     return_tensors="pt"
                 ).to(self.device)
-                
-                # Set generation parameters based on quality
-                if quality == "detailed":
-                    max_length = 75
-                    num_beams = 7
-                    temperature = 0.65
-                    top_p = 0.95
-                    length_penalty = 1.2
-                elif quality == "creative":
-                    max_length = 75
-                    num_beams = 5
-                    temperature = 1.0
-                    top_p = 0.95
-                    length_penalty = 0.8
-                    do_sample = True
-                else:  # standard
-                    max_length = 50
-                    num_beams = 5
-                    temperature = 0.7
-                    top_p = 0.9
-                    length_penalty = 1.0
-                    do_sample = True
                 
                 # Generate caption
                 with torch.inference_mode():
                     generated_ids = self.model.generate(
                         pixel_values=inputs.pixel_values,
-                        max_length=max_length,
-                        num_beams=num_beams,
-                        length_penalty=length_penalty,
-                        temperature=temperature,
-                        do_sample=do_sample,
-                        top_p=top_p
+                        **generation_params
                     )
                 
                 # Decode caption
                 caption = self.processor.decode(generated_ids[0], skip_special_tokens=True)
                 caption = self.clean_output(caption)
                 
-                # Prepare detailed description
-                description = f"Description: {caption}"
+                # Format description based on quality
+                if quality == "detailed":
+                    description = f"Detailed Analysis: {caption}"
+                    # Add image metadata for detailed view
+                    width, height = image.size
+                    description += f"\n\nImage Dimensions: {width}x{height} pixels"
+                    description += f"\n\nDominant Colors: {self._analyze_colors(image)}"
+                elif quality == "creative":
+                    description = f"Creative Interpretation: {caption}"
+                    # For creative mode, add a stylistic note
+                    description += "\n\nThis creative description captures the essence and mood of the image through artistic interpretation."
+                else:  # standard
+                    description = f"Description: {caption}"
+                
+                description += f"\n\nGenerated using Janus/BLIP ({quality} mode)"
                 
                 return description, caption
                 
@@ -153,6 +207,100 @@ class JanusModel(BaseVisionModel):
         except Exception as e:
             logger.error(f"Error analyzing image: {str(e)}")
             return "Error: An unexpected error occurred.", None
+    
+    def _analyze_colors(self, image: Image.Image) -> str:
+        """
+        Analyze the dominant colors in an image for the detailed mode.
+        This is a simple implementation - returns basic color analysis.
+        
+        Args:
+            image: PIL Image to analyze
+            
+        Returns:
+            str: Description of dominant colors
+        """
+        try:
+            # Resize image for faster processing
+            small_img = image.resize((100, 100))
+            # Convert to RGB if not already
+            if small_img.mode != 'RGB':
+                small_img = small_img.convert('RGB')
+            
+            # Simple brightness analysis
+            r, g, b = 0, 0, 0
+            pixel_count = 0
+            
+            for x in range(small_img.width):
+                for y in range(small_img.height):
+                    pr, pg, pb = small_img.getpixel((x, y))
+                    r += pr
+                    g += pg
+                    b += pb
+                    pixel_count += 1
+            
+            # Average RGB values
+            r //= pixel_count
+            g //= pixel_count
+            b //= pixel_count
+            
+            # Very simple color categorization
+            brightness = (r + g + b) // 3
+            if brightness < 85:
+                brightness_desc = "dark"
+            elif brightness < 170:
+                brightness_desc = "medium"
+            else:
+                brightness_desc = "bright"
+            
+            # Determine color balance
+            max_channel = max(r, g, b)
+            if max_channel == r and r > g + 20 and r > b + 20:
+                color_desc = "reddish"
+            elif max_channel == g and g > r + 20 and g > b + 20:
+                color_desc = "greenish"
+            elif max_channel == b and b > r + 20 and b > g + 20:
+                color_desc = "bluish"
+            elif r > 200 and g > 200 and b < 100:
+                color_desc = "yellowish"
+            elif r > 200 and g < 100 and b > 200:
+                color_desc = "magenta"
+            elif r < 100 and g > 200 and b > 200:
+                color_desc = "cyan"
+            elif abs(r - g) < 30 and abs(r - b) < 30 and abs(g - b) < 30:
+                if brightness < 60:
+                    color_desc = "black"
+                elif brightness > 200:
+                    color_desc = "white"
+                else:
+                    color_desc = "gray"
+            else:
+                color_desc = "mixed"
+            
+            return f"{brightness_desc} {color_desc} tones (RGB avg: {r},{g},{b})"
+        except Exception as e:
+            logger.warning(f"Color analysis error: {e}")
+            return "color analysis unavailable"
+
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+        """
+        Analyze a batch of images using the BLIP model by processing them individually.
+        
+        Args:
+            image_paths (List[str]): List of paths to image files
+            quality (str): Quality level - "standard", "detailed", or "creative"
+            
+        Returns:
+            List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
+        """
+        if not image_paths:
+            return []
+        
+        results = []
+        for image_path in image_paths:
+            # Call the existing single-image analysis method
+            description, clean_caption = self.analyze_image(image_path, quality=quality)
+            results.append((description, clean_caption))
+        return results
 
     @classmethod
     def is_available(cls) -> bool:

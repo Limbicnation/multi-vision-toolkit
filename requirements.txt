@@ -1,16 +1,22 @@
 torch>=2.6.0
 torchvision>=0.17.0
-transformers>=4.40.0
+# For Qwen/Qwen2.5-VL-3B-Instruct, latest transformers from git is recommended:
+git+https://github.com/huggingface/transformers.git
+# For stable releases, you can use a specific version like:
+# transformers>=4.40.0 # Or a more recent stable version if Qwen class is included
 Pillow>=9.0.0
-timm>=0.9.12
+timm==0.9.12
 einops>=0.7.0
 python-dotenv>=1.0.0
 opencv-python>=4.8.0
 matplotlib>=3.5.0
-accelerate>=0.25.0
+accelerate>=0.25.0 # accelerate is also installed by transformers from git
 safetensors>=0.4.0
 tensorboard>=2.15.0 
 numpy>=1.24.0      
 tqdm>=4.66.0
 qwen-vl-utils[decord]==0.0.8
 tkinterdnd2>=0.3.0
+# autoawq>=0.1.8 # Commented out as we are using non-AWQ Qwen due to dependency complexities
+# For optional performance boost with Qwen non-AWQ (and other models):
+# pip install flash-attn --no-build-isolation

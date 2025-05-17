@@ -8,8 +8,8 @@
 
 ## 🚀 Key Features
 
-- **Multiple Vision Models**: Florence-2 (advanced vision tasks), BLIP (high-quality image captioning), and Qwen2.5-VL (high-quality multimodal captioning)
-- **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering
+- **Multiple Vision Models**: Florence-2 (advanced vision tasks), BLIP (high-quality image captioning), and Qwen2.5-VL (model loading, specific analysis capabilities currently under review)
+- **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and BLIP)
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
 - **Quality Controls**: Generate captions in standard, detailed, or creative modes
@@ -44,11 +44,13 @@ pip install -r requirements.txt
 
 # Additional steps for specific models:
 
-# For Qwen2.5-VL:
-# Install/Upgrade transformers (latest recommended for Qwen support)
-pip install --upgrade git+https://github.com/huggingface/transformers.git
-# Install qwen utilities and ensure autoawq is up-to-date for AWQ models
-pip install qwen-vl-utils[decord]==0.0.8 "autoawq>=0.1.8"
+# For Qwen2.5-VL (using non-AWQ version):
+# 1. Install/Upgrade transformers (latest from git source is crucial)
+pip install git+https://github.com/huggingface/transformers.git --upgrade
+# 2. Install qwen utilities
+pip install qwen-vl-utils[decord]==0.0.8
+# 3. (Optional, for performance) Install flash-attn
+pip install flash-attn --no-build-isolation
 
 # For Florence-2 (if encountering issues):
 # Ensure timm is up-to-date
@@ -100,19 +102,21 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 | Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
 | Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
 | BLIP/Janus | High-quality image captioning | 4GB+ | Dummy model |
-| Qwen2.5-VL-3B-Instruct-AWQ | High-quality multimodal captioning with AWQ optimization | 8GB+ | CLIP model |
+| Qwen2.5-VL-3B-Instruct | High-quality multimodal captioning | 8GB+ (approx.) | CLIP model |
 
-Each model has a fallback mechanism if the primary model fails to load. The Qwen model specifically falls back to a CLIP-based implementation that provides basic image classification and captioning.
+Each model has a fallback mechanism if the primary model fails to load. The Qwen model (non-AWQ) will fall back to a CLIP-based implementation if it encounters issues.
 
 ## 🔧 Troubleshooting
 
 - **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes
-- **Model Loading**: Update transformers with `pip install --upgrade transformers` or clear cache
+- **Model Loading**: Ensure `transformers` is updated from git source for Qwen (`pip install git+https://github.com/huggingface/transformers.git --upgrade`) or clear cache.
 - **Image Errors**: Verify image format and permissions
-- **Qwen Model Errors**: Make sure to install `transformers` from GitHub and `qwen-vl-utils` with the [decord] feature. If the Qwen model fails to load, the application will automatically fall back to using CLIP for basic image classification.
-- **KeyError: 'qwen2_5_vl'**: Update transformers with `pip install git+https://github.com/huggingface/transformers.git`
+- **Qwen Model Errors**: Ensure `transformers` is installed from GitHub and `qwen-vl-utils` with the `[decord]` feature is installed. The non-AWQ version of Qwen is now used by default. If it fails, it will fall back to CLIP. For performance, consider installing `flash-attn`.
+- **KeyError: 'qwen2_5_vl'**: This indicates your `transformers` library is too old or not installed from the git source. Update with `pip install git+https://github.com/huggingface/transformers.git --upgrade`.
 - **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
 - **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.
+- **Qwen "IncompleteBody" Error**: If encountering network errors during Qwen model downloads, use the provided `clone_local_models.sh` script to download models directly (see Local Model Storage below).
+- **Qwen Character Encoding Issues**: The toolkit now automatically applies encoding fixes to clean problematic text output from the Qwen model.
 
 ### Setting Up HuggingFace Token
 
@@ -130,6 +134,27 @@ Models are downloaded and cached automatically when you use them for the first t
 - macOS: `~/Library/Caches/florence2-vision-toolkit/`
 
 You can customize the cache location by setting the `TRANSFORMERS_CACHE` environment variable in your `.env` file.
+
+### Local Model Storage
+
+To avoid issues with model caching or to ensure models persist even when the cache is cleared, you can use local model storage:
+
+1. **Clone models locally** using the provided script:
+   ```bash
+   ./clone_local_models.sh
+   ```
+
+2. **Set up environment** for local model usage:
+   ```bash
+   source .env.local
+   ```
+
+3. **Run with local Qwen model**:
+   ```bash
+   python main.py --model qwen_local --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
+   ```
+
+This approach uses git-lfs to properly download the model files and avoids the "IncompleteBody" errors that can occur with the regular downloading mechanism.
 
 ### Common Error: CVE-2025-32434 Vulnerability
 

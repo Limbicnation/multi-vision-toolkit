@@ -209,19 +209,63 @@ class BaseVisionModel(ABC):
         """
         raise NotImplementedError("Subclasses must implement analyze_image")
 
+    @abstractmethod
+    def analyze_images_batch(self, image_paths: list[str], quality: str = "standard") -> list[Tuple[str, Optional[str]]]:
+        """
+        Analyze a batch of images using the model.
+        
+        Args:
+            image_paths (List[str]): List of paths to image files
+            quality (str): Quality level - "standard", "detailed", or "creative"
+            
+        Returns:
+            List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
+        """
+        raise NotImplementedError("Subclasses must implement analyze_images_batch")
+
     def clean_output(self, text: str) -> str:
-        """Clean model output by removing special tokens and formatting."""
+        """Clean model output by removing special tokens, non-printable characters, and formatting."""
         import re
         try:
+            # Ensure text is a string
+            if not isinstance(text, str):
+                try:
+                    # Attempt to decode if it's bytes
+                    if isinstance(text, bytes):
+                        text = text.decode('utf-8', errors='replace')
+                    else:
+                        # If it's some other type, try to convert to string
+                        text = str(text)
+                except Exception as e_conv:
+                    logger.error(f"Could not convert/decode text to string: {e_conv}")
+                    return "Error: Could not decode model output."
+
+            # Remove common special tokens
             text = text.replace('</s>', '').replace('<s>', '')
+            text = re.sub(r'<\|.*?\|>', '', text) # For tokens like <|user|>, <|assistant|>
+            text = re.sub(r'<image_placeholder>', '', text) # Specific to some models
+            text = re.sub(r'<OD>', '', text) # Specific to Florence-2 OD task
+            text = re.sub(r'<loc_\d+>', '', text) # Florence-2 location tokens
+
+            # Remove any remaining HTML-like tags
             text = re.sub(r'<[^>]+>', '', text)
-            text = re.sub(r'<loc_\d+>', '', text)
+            
+            # Remove non-printable characters except for common whitespace (space, tab, newline, carriage return)
+            # This will also replace unknown/corrupted characters with the Unicode replacement character (U+FFFD)
+            # if they couldn't be decoded properly earlier.
+            text = ''.join(char if char.isprintable() or char in [' ', '\t', '\n', '\r'] else ' ' for char in text)
+
+            # Normalize whitespace (replace multiple spaces/newlines with a single one)
             text = ' '.join(text.split())
+            
+            # Remove URLs
             text = re.sub(r'http\S+', '', text)
+            
             return text.strip()
         except Exception as e:
             logger.error(f"Error cleaning output text: {str(e)}")
-            return text  # Return original text if cleaning fails
+            # If cleaning fails catastrophically, return a placeholder or the (potentially problematic) original text
+            return "Error: Text cleaning failed." if not isinstance(text, str) else text
             
     def manage_memory(self, aggressive=False):
         """
