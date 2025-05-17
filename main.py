@@ -9,6 +9,14 @@ from tkinter import ttk, messagebox, filedialog
 import shutil
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
+
+# Apply encoding fix for Qwen model
+try:
+    from fix_qwen_encoding import apply_encoding_fix
+    apply_encoding_fix()
+    print("Applied Qwen encoding fix")
+except ImportError:
+    print("Warning: fix_qwen_encoding.py not found. Character encoding issues may occur with Qwen model.")
 from dataclasses import dataclass
 import torch
 import re

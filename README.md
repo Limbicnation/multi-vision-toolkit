@@ -115,6 +115,8 @@ Each model has a fallback mechanism if the primary model fails to load. The Qwen
 - **KeyError: 'qwen2_5_vl'**: This indicates your `transformers` library is too old or not installed from the git source. Update with `pip install git+https://github.com/huggingface/transformers.git --upgrade`.
 - **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
 - **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.
+- **Qwen "IncompleteBody" Error**: If encountering network errors during Qwen model downloads, use the provided `clone_local_models.sh` script to download models directly (see Local Model Storage below).
+- **Qwen Character Encoding Issues**: The toolkit now automatically applies encoding fixes to clean problematic text output from the Qwen model.
 
 ### Setting Up HuggingFace Token
 
@@ -132,6 +134,27 @@ Models are downloaded and cached automatically when you use them for the first t
 - macOS: `~/Library/Caches/florence2-vision-toolkit/`
 
 You can customize the cache location by setting the `TRANSFORMERS_CACHE` environment variable in your `.env` file.
+
+### Local Model Storage
+
+To avoid issues with model caching or to ensure models persist even when the cache is cleared, you can use local model storage:
+
+1. **Clone models locally** using the provided script:
+   ```bash
+   ./clone_local_models.sh
+   ```
+
+2. **Set up environment** for local model usage:
+   ```bash
+   source .env.local
+   ```
+
+3. **Run with local Qwen model**:
+   ```bash
+   python main.py --model qwen_local --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
+   ```
+
+This approach uses git-lfs to properly download the model files and avoids the "IncompleteBody" errors that can occur with the regular downloading mechanism.
 
 ### Common Error: CVE-2025-32434 Vulnerability
 
