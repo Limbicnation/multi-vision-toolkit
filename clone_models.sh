@@ -115,23 +115,53 @@ clone_model() {
     if [ -d "$dir_name" ]; then
         print_status "$dir_name directory already exists. Checking for updates..."
         
-        # Try to update existing repository
-        cd "$dir_name"
-        if git pull; then
-            print_status "Updated $dir_name successfully."
+        # Check if it's a git repository
+        if [ -d "$dir_name/.git" ]; then
+            # Try to update existing repository
+            cd "$dir_name"
+            if git pull; then
+                print_status "Updated $dir_name successfully."
+            else
+                print_warning "Could not update $dir_name. It may be modified locally."
+            fi
+            cd ..
         else
-            print_warning "Could not update $dir_name. It may be modified locally."
+            print_warning "$dir_name exists but is not a git repository."
+            print_status "Backing up existing directory and re-cloning..."
+            
+            # Create a backup of the existing directory
+            local backup_dir="${dir_name}_backup_$(date +%Y%m%d%H%M%S)"
+            mv "$dir_name" "$backup_dir"
+            print_status "Existing directory moved to $backup_dir"
+            
+            # Proceed with fresh clone
+            # Check if HF_TOKEN is set for private repos
+            if [ -n "$HF_TOKEN" ]; then
+                print_status "Using HuggingFace token for authentication..."
+                git clone "https://USER:${HF_TOKEN}@huggingface.co/${repo_url}" "$dir_name"
+            else
+                git clone "https://huggingface.co/${repo_url}" "$dir_name"
+            fi
+            
+            if [ $? -ne 0 ]; then
+                print_error "Failed to clone $repo_name. Please check your internet connection and permissions."
+                print_warning "If this is a private model, you need to set the HF_TOKEN environment variable."
+                # Restore the backup if clone fails
+                rm -rf "$dir_name" 2>/dev/null
+                mv "$backup_dir" "$dir_name"
+                print_status "Restored original directory."
+                return 1
+            fi
         fi
-        cd ..
     else
         print_status "Cloning $repo_name..."
         
         # Check if HF_TOKEN is set for private repos
         if [ -n "$HF_TOKEN" ]; then
             print_status "Using HuggingFace token for authentication..."
-            git clone "https://USER:${HF_TOKEN}@huggingface.co/${repo_url}"
+            git clone "https://USER:${HF_TOKEN}@huggingface.co/${repo_url}" "$dir_name"
         else
-            git clone "https://huggingface.co/${repo_url}"
+            git clone "https://huggingface.co/${repo_url}" "$dir_name"
         fi
         
         if [ $? -ne 0 ]; then
@@ -192,6 +222,21 @@ if [ -z "$HF_TOKEN" ]; then
     else
         print_warning "No HF_TOKEN found. Some models may require authentication."
         print_warning "You can add it to a .env file in the project root or set it as an environment variable."
+    fi
+fi
+
+# Special handling for existing Janus-Pro-1B directories
+# The script may have previously attempted to create "Janus-Pro-1B" instead of "deepseek-ai-Janus-Pro-1B"
+if [ -d "Janus-Pro-1B" ] && [ ! -d "deepseek-ai-Janus-Pro-1B" ]; then
+    print_status "Found 'Janus-Pro-1B' directory, checking if it's a properly cloned repository..."
+    if [ -d "Janus-Pro-1B/.git" ]; then
+        print_status "Existing Janus-Pro-1B is a git repository, moving to correct name..."
+        mv "Janus-Pro-1B" "deepseek-ai-Janus-Pro-1B"
+        print_status "Renamed 'Janus-Pro-1B' to 'deepseek-ai-Janus-Pro-1B'"
+    else
+        print_warning "Janus-Pro-1B exists but is not a git repository."
+        print_status "Renaming to 'Janus-Pro-1B_old' to avoid conflicts..."
+        mv "Janus-Pro-1B" "Janus-Pro-1B_old"
     fi
 fi
 

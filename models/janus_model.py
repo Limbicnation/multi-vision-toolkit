@@ -25,9 +25,15 @@ class JanusModel(BaseVisionModel):
         """
         # Try local path first, then fall back to HuggingFace
         if model_path is None:
-            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "deepseek-ai-Janus-Pro-1B")
-            if os.path.exists(local_path):
-                self.model_path = local_path
+            # Check for both directory naming formats
+            local_path1 = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "deepseek-ai-Janus-Pro-1B")
+            local_path2 = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Janus-Pro-1B")
+            
+            if os.path.exists(local_path1):
+                self.model_path = local_path1
+                logger.info(f"Using local model: {self.model_path}")
+            elif os.path.exists(local_path2):
+                self.model_path = local_path2
                 logger.info(f"Using local model: {self.model_path}")
             else:
                 self.model_path = "deepseek-ai/Janus-Pro-1B"
@@ -43,14 +49,35 @@ class JanusModel(BaseVisionModel):
         try:
             logger.info(f"Loading model from {self.model_path}...")
             
+            # First, check transformers version
             try:
+                import transformers
+                logger.info(f"Using transformers version: {transformers.__version__}")
+                
+                # Verify the minimum required version
+                from packaging import version
+                if version.parse(transformers.__version__) < version.parse("4.40.0"):
+                    logger.warning(f"Transformers version {transformers.__version__} might be too old for Janus-Pro-1B.")
+                    logger.warning("Consider upgrading with: pip install git+https://github.com/huggingface/transformers.git")
+            except ImportError:
+                logger.warning("Could not check transformers version. If you encounter issues, upgrade with:")
+                logger.warning("pip install git+https://github.com/huggingface/transformers.git")
+            
+            try:
+                # Always use trust_remote_code for newer models like Janus-Pro-1B
                 self.processor = AutoProcessor.from_pretrained(
                     self.model_path,
-                    trust_remote_code=True,  # Add trust_remote_code
-                    local_files_only=False  # Allow downloading if not available locally
+                    trust_remote_code=True,
+                    local_files_only=False
                 )
             except Exception as e:
                 logger.error(f"Failed to load processor: {str(e)}")
+                
+                # Provide specific error info about transformers version
+                if "model type `multi_modality`" in str(e):
+                    logger.error("The 'multi_modality' model type is not recognized. Your transformers version is likely outdated.")
+                    logger.error("Please upgrade transformers with: pip install git+https://github.com/huggingface/transformers.git")
+                    
                 raise RuntimeError("Processor initialization failed") from e
                 
             try:
@@ -58,12 +85,13 @@ class JanusModel(BaseVisionModel):
                 settings = self.get_low_memory_optimization_settings()
                 
                 # For optimal performance, use cuda or float16 when available
+                # Essential to use trust_remote_code for newer models like Janus-Pro-1B
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
                     torch_dtype=self.torch_dtype,
-                    trust_remote_code=True,  # Add trust_remote_code
-                    revision="main",         # Explicitly use main branch
-                    local_files_only=False,   # Allow downloading if not available locally
+                    trust_remote_code=True,  
+                    revision="main",
+                    local_files_only=False,
                     device_map="auto" if self.device.startswith("cuda") else None
                 )
                 
@@ -73,6 +101,12 @@ class JanusModel(BaseVisionModel):
                     
             except Exception as e:
                 logger.error(f"Failed to load model: {str(e)}")
+                
+                # Provide specific error info about transformers version
+                if "model type `multi_modality`" in str(e):
+                    logger.error("The 'multi_modality' model type is not recognized. Your transformers version is likely outdated.")
+                    logger.error("Please upgrade transformers with: pip install git+https://github.com/huggingface/transformers.git")
+                
                 raise RuntimeError("Model initialization failed") from e
                 
         except Exception as e:

@@ -7,10 +7,10 @@ import os
 logger = logging.getLogger(__name__)
 
 class JanusModel(BaseVisionModel):
-    """Dummy Janus model for when the actual model cannot be loaded."""
+    """Dummy Janus-Pro-1B model for when the actual model cannot be loaded."""
     
-    def __init__(self, model_path: str = "Salesforce/blip-image-captioning-large"):
-        """Initialize the dummy Janus model."""
+    def __init__(self, model_path: str = "deepseek-ai/Janus-Pro-1B"):
+        """Initialize the dummy Janus-Pro-1B model."""
         self.model_path = model_path
         logger.warning("Using dummy JanusModel - actual model could not be loaded")
         # Skip dependency checks but call parent init
@@ -28,11 +28,15 @@ class JanusModel(BaseVisionModel):
             return "Error: Image file not found.", None
             
         message = (
-            "Error: Janus model (BLIP) is not available due to import errors.\n\n"
+            "Error: Janus-Pro-1B model is not available due to import errors.\n\n"
             "Try installing the required dependencies:\n"
             "- pip install torch==2.6.0 torchvision==0.17.0\n"
-            "- pip install transformers>=4.30.0\n"
-            "- pip install accelerate\n\n"
+            "- pip install git+https://github.com/huggingface/transformers.git\n"
+            "- pip install accelerate\n"
+            "- pip install bitsandbytes\n\n"
+            "IMPORTANT: If you see a 'model type `multi_modality` not recognized' error,\n"
+            "you MUST install the very latest transformers directly from GitHub:\n"
+            "pip install git+https://github.com/huggingface/transformers.git\n\n"
             "Or continue using the Florence-2 model which is working correctly."
         )
         

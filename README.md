@@ -109,13 +109,14 @@ Each model has a fallback mechanism if the primary model fails to load. The Qwen
 ## 🔧 Troubleshooting
 
 - **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes
-- **Model Loading**: Ensure `transformers` is updated from git source for Qwen (`pip install git+https://github.com/huggingface/transformers.git --upgrade`) or clear cache.
+- **Model Loading**: Ensure `transformers` is updated from git source for both Qwen and Janus-Pro-1B: `pip install git+https://github.com/huggingface/transformers.git --upgrade` or clear cache.
 - **Image Errors**: Verify image format and permissions
+- **Janus-Pro-1B "multi_modality" Error**: If you see an error about "model type `multi_modality` not recognized", your transformers library is too old. The Janus-Pro-1B model REQUIRES the latest version directly from GitHub: `pip install git+https://github.com/huggingface/transformers.git --upgrade`
 - **Qwen Model Errors**: Ensure `transformers` is installed from GitHub and `qwen-vl-utils` with the `[decord]` feature is installed. The non-AWQ version of Qwen is now used by default. If it fails, it will fall back to CLIP. For performance, consider installing `flash-attn`.
 - **KeyError: 'qwen2_5_vl'**: This indicates your `transformers` library is too old or not installed from the git source. Update with `pip install git+https://github.com/huggingface/transformers.git --upgrade`.
 - **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
 - **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.
-- **Qwen "IncompleteBody" Error**: If encountering network errors during Qwen model downloads, use the provided `clone_local_models.sh` script to download models directly (see Local Model Storage below).
+- **Model Download "IncompleteBody" Error**: If encountering network errors during model downloads, use the provided `clone_models.sh` script to download models directly (see Local Model Storage below).
 - **Qwen Character Encoding Issues**: The toolkit now automatically applies encoding fixes to clean problematic text output from the Qwen model.
 
 ### Setting Up HuggingFace Token
@@ -141,7 +142,7 @@ To avoid issues with model caching or to ensure models persist even when the cac
 
 1. **Clone models locally** using the provided script:
    ```bash
-   ./clone_local_models.sh
+   ./clone_models.sh
    ```
 
 2. **Set up environment** for local model usage:
@@ -149,12 +150,16 @@ To avoid issues with model caching or to ensure models persist even when the cac
    source .env.local
    ```
 
-3. **Run with local Qwen model**:
+3. **Run with local model**:
    ```bash
-   python main.py --model qwen_local --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
+   python main.py --model janus --review_dir data/review  # For Janus-Pro-1B
+   # Or
+   python main.py --model qwen --review_dir data/review   # For Qwen model
    ```
 
-This approach uses git-lfs to properly download the model files and avoids the "IncompleteBody" errors that can occur with the regular downloading mechanism.
+The `clone_models.sh` script uses git-lfs to properly download model files, avoiding the "IncompleteBody" errors that can occur with the regular downloading mechanism. It will also handle situations where previous cloning attempts might have left partial directories.
+
+**Note:** If you previously tried cloning Janus-Pro-1B manually and encountered errors like "destination path already exists and is not an empty directory", the updated script will automatically handle this by renaming problematic directories and properly cloning the model.
 
 ### Common Error: CVE-2025-32434 Vulnerability
 

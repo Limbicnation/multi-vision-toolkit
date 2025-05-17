@@ -1,9 +1,10 @@
 torch>=2.6.0
 torchvision>=0.17.0
-# For Qwen/Qwen2.5-VL-3B-Instruct and Janus-Pro, latest transformers from git is recommended:
+# For Qwen/Qwen2.5-VL-3B-Instruct and Janus-Pro-1B, latest transformers from git is REQUIRED:
 git+https://github.com/huggingface/transformers.git
-# For stable releases, you can use a specific version like:
-# transformers>=4.40.0 # Or a more recent stable version if Qwen class is included
+# DO NOT use a stable release for Janus-Pro-1B as it requires the very latest
+# transformers with support for the 'multi_modality' architecture type
+packaging>=23.0  # Required for version comparison
 Pillow>=9.0.0
 timm==0.9.12
 einops>=0.7.0
