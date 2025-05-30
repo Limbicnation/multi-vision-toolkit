@@ -8,6 +8,9 @@ import os
 from typing import Tuple, Optional, Dict, List, Any
 import importlib
 
+# Set PyTorch memory allocation config to avoid fragmentation
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 try:
     import torch
 except ImportError:
@@ -21,7 +24,7 @@ except ImportError:
     Image = None # type: ignore
 
 _QWEN_CLASS_AVAILABLE = False
-Qwen2_5_VLForConditionalGeneration = None
+AutoModelForImageTextToText = None
 AutoProcessor = None
 AutoTokenizer = None # type: ignore
 CLIPModel = None # type: ignore
@@ -29,9 +32,9 @@ CLIPProcessor = None # type: ignore
 process_vision_info_fn = None # type: ignore
 
 try:
-    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer
+    from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
     _QWEN_CLASS_AVAILABLE = True
-    logger.info("Successfully imported Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer.")
+    logger.info("Successfully imported AutoModelForImageTextToText, AutoProcessor, AutoTokenizer.")
 except ImportError as e:
     logger.error(
         f"Failed to import Qwen classes from transformers: {e}. "
@@ -62,7 +65,6 @@ class QwenModel(BaseVisionModel):
         'transformers': 'transformers (latest from git)',
         'torch': 'torch',
         'PIL': 'Pillow',
-        'qwen_vl_utils': 'qwen-vl-utils[decord]==0.0.8',
         'accelerate': 'accelerate',
         'flash_attn': 'flash-attn (optional, for performance, install with --no-build-isolation)'
     }
@@ -104,9 +106,7 @@ class QwenModel(BaseVisionModel):
             try:
                 importlib.import_module(package)
                 if package == 'transformers' and not _QWEN_CLASS_AVAILABLE:
-                    missing_packages.append((package, f"{pip_name} (Qwen2_5_VLForConditionalGeneration class not found. Ensure latest git version.)"))
-                elif package == 'qwen_vl_utils' and process_vision_info_fn is None:
-                     missing_packages.append((package, pip_name))
+                    missing_packages.append((package, f"{pip_name} (AutoModelForImageTextToText class not found. Ensure latest git version.)"))
             except ImportError:
                 missing_packages.append((package, pip_name))
         
@@ -132,7 +132,6 @@ class QwenCaptioner(BaseVisionModel):
         'transformers': 'transformers (latest from git)',
         'torch': 'torch',
         'PIL': 'Pillow',
-        'qwen_vl_utils': 'qwen-vl-utils[decord]==0.0.8',
         'accelerate': 'accelerate',
         'bitsandbytes': 'bitsandbytes (for quantization)',
         'flash_attn': 'flash-attn (optional, for performance, install with --no-build-isolation)'
@@ -140,7 +139,14 @@ class QwenCaptioner(BaseVisionModel):
 
     def __init__(self, model_path: str = None, use_quantization: str = None):
         self.model_path = model_path or "Ertugrul/Qwen2.5-VL-7B-Captioner-Relaxed"
-        self.use_quantization = use_quantization or "8bit"  # Default to 8-bit for 23.5GB VRAM
+        
+        # Check for environment variable to force 4-bit quantization
+        if os.getenv("QWEN_FORCE_4BIT", "").lower() in ["1", "true", "yes"]:
+            self.use_quantization = "4bit"
+            logger.info("Environment variable QWEN_FORCE_4BIT detected, forcing 4-bit quantization")
+        else:
+            self.use_quantization = use_quantization or "8bit"  # Default to 8-bit for 23.5GB VRAM
+        
         logger.info(f"Initializing QwenCaptioner with model: {self.model_path}, quantization: {self.use_quantization}")
         
         self._check_dependencies()
@@ -221,7 +227,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(f"Error loading image {image_path}: {str(e)}")
             return "Error: Failed to load or process image.", None
 
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE, process_vision_info_fn]):
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE]):
             logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             return self._analyze_with_clip(pil_image, quality)
 
@@ -229,17 +235,25 @@ class QwenCaptioner(BaseVisionModel):
         instruction = self.get_instruction_for_quality_captioner(quality)
         
         messages = [
-            {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "You are an expert image describer."}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": instruction},
+                    {"type": "image", "image": pil_image},
+                ],
+            },
         ]
 
         try:
-            text_for_template = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            image_inputs_processed, video_inputs_processed = process_vision_info_fn(messages)
+            text_for_template = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             
             inputs = self.processor(
                 text=[text_for_template],
-                images=image_inputs_processed,
-                videos=video_inputs_processed,
+                images=pil_image,
                 padding=True,
                 return_tensors="pt",
             ).to(self.device)
@@ -257,6 +271,12 @@ class QwenCaptioner(BaseVisionModel):
                 clean_up_tokenization_spaces=True
             )[0]
             caption = self.clean_output(caption)
+            
+            # Ensure caption is a string, not a list
+            if isinstance(caption, list):
+                caption = caption[0] if caption else ""
+            elif not isinstance(caption, str):
+                caption = str(caption)
             
             model_name = "Qwen2.5-VL-7B-Captioner-Relaxed"
             description = f"Description: {caption}\n\nGenerated by: {model_name}"
@@ -280,9 +300,7 @@ class QwenCaptioner(BaseVisionModel):
             try:
                 importlib.import_module(package)
                 if package == 'transformers' and not _QWEN_CLASS_AVAILABLE:
-                    missing_packages.append((package, f"{pip_name} (Qwen2_5_VLForConditionalGeneration class not found. Ensure latest git version.)"))
-                elif package == 'qwen_vl_utils' and process_vision_info_fn is None:
-                     missing_packages.append((package, pip_name))
+                    missing_packages.append((package, f"{pip_name} (AutoModelForImageTextToText class not found. Ensure latest git version.)"))
             except ImportError:
                 missing_packages.append((package, pip_name))
         
@@ -328,15 +346,11 @@ class QwenCaptioner(BaseVisionModel):
     def _setup_model(self) -> None:
         self._using_fallback = False
         try:
-            if not _QWEN_CLASS_AVAILABLE or Qwen2_5_VLForConditionalGeneration is None:
-                logger.error("Qwen2_5_VLForConditionalGeneration class not available. Falling back.")
-                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found.")
+            if not _QWEN_CLASS_AVAILABLE or AutoModelForImageTextToText is None:
+                logger.error("AutoModelForImageTextToText class not available. Falling back.")
+                self._load_clip_as_fallback(reason="AutoModelForImageTextToText class not found.")
                 return
 
-            if process_vision_info_fn is None:
-                logger.error("process_vision_info from qwen_vl_utils not available. Falling back.")
-                self._load_clip_as_fallback(reason="process_vision_info_fn not available.")
-                return
             
             logger.info(f"Loading Qwen2.5-VL (non-AWQ) model: {self.model_path}")
             
@@ -365,7 +379,7 @@ class QwenCaptioner(BaseVisionModel):
                 except Exception as e: # Catch other potential errors if attn_implementation is not supported by the transformers version
                     logger.warning(f"Could not enable Flash Attention 2 for Qwen: {e}. Proceeding without it.")
             
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
+            self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
             logger.info(f"Successfully loaded Qwen model: {self.model_path} with kwargs: {model_kwargs}")
             
             self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
@@ -380,39 +394,47 @@ class QwenCaptioner(BaseVisionModel):
         """Setup method specifically for QwenCaptioner with quantization support."""
         self._using_fallback = False
         try:
-            if not _QWEN_CLASS_AVAILABLE or Qwen2_5_VLForConditionalGeneration is None:
-                logger.error("Qwen2_5_VLForConditionalGeneration class not available. Falling back.")
-                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found.")
+            if not _QWEN_CLASS_AVAILABLE or AutoModelForImageTextToText is None:
+                logger.error("AutoModelForImageTextToText class not available. Falling back.")
+                self._load_clip_as_fallback(reason="AutoModelForImageTextToText class not found.")
                 return
 
-            if process_vision_info_fn is None:
-                logger.error("process_vision_info from qwen_vl_utils not available. Falling back.")
-                self._load_clip_as_fallback(reason="process_vision_info_fn not available.")
-                return
             
-            # Clear CUDA cache before loading large model
+            # Aggressive memory cleanup before loading large model
             if torch.cuda.is_available():
+                # Force garbage collection
+                import gc
+                gc.collect()
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
                 
-                # Check memory status
+                # Multiple cleanup attempts for stubborn memory
+                for _ in range(3):
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                
+                # Check memory status after cleanup
                 total_memory = torch.cuda.get_device_properties(0).total_memory
                 allocated_memory = torch.cuda.memory_allocated()
                 reserved_memory = torch.cuda.memory_reserved()
-                free_memory = total_memory - allocated_memory
+                free_memory = total_memory - reserved_memory  # Use reserved as baseline
                 
                 total_gb = total_memory / (1024**3)
                 allocated_gb = allocated_memory / (1024**3)
                 reserved_gb = reserved_memory / (1024**3)
                 free_gb = free_memory / (1024**3)
                 
-                logger.info(f"GPU Memory Status - Total: {total_gb:.2f}GB, Allocated: {allocated_gb:.2f}GB, Reserved: {reserved_gb:.2f}GB, Free: {free_gb:.2f}GB")
+                logger.info(f"GPU Memory Status After Cleanup - Total: {total_gb:.2f}GB, Allocated: {allocated_gb:.2f}GB, Reserved: {reserved_gb:.2f}GB, Free: {free_gb:.2f}GB")
                 
-                # If insufficient memory, force 4-bit quantization
-                if free_gb < 6.0:  # Need at least 6GB for 7B model with 8-bit
-                    logger.warning(f"Insufficient GPU memory ({free_gb:.2f}GB). Forcing 4-bit quantization.")
+                # With 7B model + very limited memory, force 4-bit quantization or CPU fallback
+                if free_gb < 4.0:  # Critical: less than 4GB free, fallback to CPU CLIP
+                    logger.error(f"Critical GPU memory shortage ({free_gb:.2f}GB free). Cannot load 7B model, falling back to CPU CLIP.")
+                    self._load_clip_as_fallback_cpu(reason=f"Insufficient GPU memory ({free_gb:.2f}GB)")
+                    return
+                elif free_gb < 12.0:  # 7B model needs aggressive quantization
+                    logger.warning(f"Limited GPU memory ({free_gb:.2f}GB). Forcing 4-bit quantization for 7B model.")
                     self.use_quantization = "4bit"
-                elif free_gb < 10.0:  # Marginal memory, stick with 8-bit
+                elif free_gb < 16.0:  # Marginal memory, use 8-bit
                     logger.info(f"Moderate GPU memory ({free_gb:.2f}GB). Using 8-bit quantization.")
                     self.use_quantization = "8bit"
             
@@ -429,16 +451,24 @@ class QwenCaptioner(BaseVisionModel):
                 from transformers import BitsAndBytesConfig
                 bnb_config = BitsAndBytesConfig(
                     load_in_4bit=True,
+                    bnb_4bit_use_double_quant=True,
                     bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.float16,
-                    bnb_4bit_use_double_quant=True
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_storage=torch.bfloat16,
                 )
                 model_kwargs["quantization_config"] = bnb_config
-                logger.info("Using 4-bit quantization for memory efficiency")
+                # Don't set torch_dtype when using quantization
+                model_kwargs.pop("torch_dtype", None)
+                logger.info("Using 4-bit quantization with bfloat16 for memory efficiency")
             elif self.use_quantization == "8bit":
                 from transformers import BitsAndBytesConfig
-                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                bnb_config = BitsAndBytesConfig(
+                    load_in_8bit=True,
+                    llm_int8_enable_fp32_cpu_offload=False
+                )
                 model_kwargs["quantization_config"] = bnb_config
+                # Don't set torch_dtype when using quantization
+                model_kwargs.pop("torch_dtype", None)
                 logger.info("Using 8-bit quantization")
             
             if self.device.startswith('cuda'):
@@ -462,7 +492,7 @@ class QwenCaptioner(BaseVisionModel):
             #     except Exception as e:
             #         logger.warning(f"Could not enable Flash Attention 2: {e}. Proceeding without it.")
             
-            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
+            self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
             logger.info(f"Successfully loaded QwenCaptioner model: {self.model_path} with kwargs: {model_kwargs}")
             
             self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
@@ -556,7 +586,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(f"Error loading image {image_path}: {str(e)}")
             return "Error: Failed to load or process image.", None
 
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE, process_vision_info_fn]):
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE]):
             logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             return self._analyze_with_clip(pil_image, quality)
 
@@ -564,17 +594,25 @@ class QwenCaptioner(BaseVisionModel):
         instruction = self.get_instruction_for_quality(quality)
         
         messages = [
-            {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
+            {
+                "role": "system",
+                "content": [{"type": "text", "text": "You are an expert image describer."}],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": instruction},
+                    {"type": "image", "image": pil_image},
+                ],
+            },
         ]
 
         try:
-            text_for_template = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            image_inputs_processed, video_inputs_processed = process_vision_info_fn(messages)
+            text_for_template = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             
             inputs = self.processor(
                 text=[text_for_template],
-                images=image_inputs_processed,
-                videos=video_inputs_processed,
+                images=pil_image,
                 padding=True,
                 return_tensors="pt",
             ).to(self.device)
@@ -592,6 +630,12 @@ class QwenCaptioner(BaseVisionModel):
                 clean_up_tokenization_spaces=True  # Try setting to True to help with encoding issues
             )[0]
             caption = self.clean_output(caption)
+            
+            # Ensure caption is a string, not a list
+            if isinstance(caption, list):
+                caption = caption[0] if caption else ""
+            elif not isinstance(caption, str):
+                caption = str(caption)
             
             model_name = "Qwen2.5-VL (non-AWQ)"
             description = f"Description: {caption}\n\nGenerated by: {model_name}"
@@ -628,7 +672,7 @@ class QwenCaptioner(BaseVisionModel):
         if not actual_pil_images:
             return [res if res is not None else ("Error: No valid images to process.", None) for res in results]
 
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE, process_vision_info_fn]):
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE]):
             logger.info("Using fallback CLIP model for batch image analysis.")
             clip_batch_results = self._analyze_batch_with_clip(actual_pil_images, quality)
             for i, res_tuple in enumerate(clip_batch_results):
@@ -638,7 +682,6 @@ class QwenCaptioner(BaseVisionModel):
 
         # --- Qwen Batch Processing ---
         texts_for_template_batch: List[str] = []
-        processed_image_inputs_batch: List[Any] = [] 
         
         # Keep track of original indices that successfully make it through Qwen pre-processing
         valid_original_indices_for_qwen_output: List[int] = []
@@ -647,21 +690,23 @@ class QwenCaptioner(BaseVisionModel):
             current_original_idx = original_indices_for_processing[i]
             instruction = self.get_instruction_for_quality(quality)
             current_messages = [
-                {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
+                {
+                    "role": "system",
+                    "content": [{"type": "text", "text": "You are an expert image describer."}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": instruction},
+                        {"type": "image", "image": pil_image},
+                    ],
+                },
             ]
             
             try:
-                text_for_template = self.tokenizer.apply_chat_template(current_messages, tokenize=False, add_generation_prompt=True)
-                img_inputs_for_current_msg, _ = process_vision_info_fn(current_messages)
-                
-                if img_inputs_for_current_msg and len(img_inputs_for_current_msg) == 1:
-                    texts_for_template_batch.append(text_for_template)
-                    processed_image_inputs_batch.extend(img_inputs_for_current_msg) 
-                    valid_original_indices_for_qwen_output.append(current_original_idx)
-                else:
-                    err_msg = f"Error: Qwen pre-processing failed for {image_paths[current_original_idx]} (unexpected output from process_vision_info_fn)."
-                    logger.warning(err_msg)
-                    results[current_original_idx] = (err_msg, None)
+                text_for_template = self.processor.apply_chat_template(current_messages, tokenize=False, add_generation_prompt=True)
+                texts_for_template_batch.append(text_for_template)
+                valid_original_indices_for_qwen_output.append(current_original_idx)
             except Exception as e:
                 err_msg = f"Error: Qwen pre-processing failed for {image_paths[current_original_idx]} ({str(e)})."
                 logger.error(err_msg)
@@ -674,8 +719,7 @@ class QwenCaptioner(BaseVisionModel):
         try:
             inputs = self.processor(
                 text=texts_for_template_batch,
-                images=processed_image_inputs_batch,
-                videos=None, 
+                images=actual_pil_images,
                 padding=True,
                 return_tensors="pt",
             ).to(self.device)
@@ -696,6 +740,13 @@ class QwenCaptioner(BaseVisionModel):
             model_name_str = "Qwen2.5-VL (non-AWQ)"
             for i, caption_str in enumerate(captions_batch_list):
                 clean_caption = self.clean_output(caption_str)
+                
+                # Ensure clean_caption is a string, not a list
+                if isinstance(clean_caption, list):
+                    clean_caption = clean_caption[0] if clean_caption else ""
+                elif not isinstance(clean_caption, str):
+                    clean_caption = str(clean_caption)
+                
                 description = f"Description: {clean_caption}\n\nGenerated by: {model_name_str}"
                 current_original_idx = valid_original_indices_for_qwen_output[i]
                 results[current_original_idx] = (description, clean_caption)
@@ -883,9 +934,6 @@ class QwenCaptioner(BaseVisionModel):
     @classmethod
     def is_available(cls) -> bool:
         if not _QWEN_CLASS_AVAILABLE:
-            logger.warning("Qwen2_5_VLForConditionalGeneration class not found. Qwen model not available.")
+            logger.warning("AutoModelForImageTextToText class not found. Qwen model not available.")
             return False
-        if process_vision_info_fn is None: # Check the imported function reference
-            logger.warning("process_vision_info from qwen_vl_utils not found. Qwen model may not be fully available.")
-            # Consider returning False if qwen_vl_utils is absolutely critical for any operation
         return True

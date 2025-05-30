@@ -15,7 +15,7 @@ safetensors>=0.4.0
 tensorboard>=2.15.0 
 numpy>=1.24.0      
 tqdm>=4.66.0
-qwen-vl-utils[decord]==0.0.8
+# qwen-vl-utils[decord]==0.0.8  # No longer needed with AutoModelForImageTextToText
 tkinterdnd2>=0.3.0
 bitsandbytes>=0.41.0  # For quantization support with Janus-Pro-1B and QwenCaptioner-7B
 # autoawq>=0.1.8 # Commented out as we are using non-AWQ Qwen due to dependency complexities
