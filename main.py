@@ -87,6 +87,16 @@ def load_environment_from_dotenv():
         logger.warning(f"Error loading .env file: {str(e)}")
         return False
 
+def setup_cuda_memory_config():
+    """Setup CUDA memory configuration for better memory management"""
+    try:
+        # Set CUDA memory allocation configuration to reduce fragmentation
+        if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+            logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for better memory management")
+    except Exception as e:
+        logger.warning(f"Failed to set CUDA memory configuration: {e}")
+
 def setup_cache_directory():
     """Setup a persistent cache directory for models"""
     try:
@@ -364,6 +374,57 @@ class ModelManager:
         
         # Check if models are available locally
         self.check_model_cache()
+
+    def unload_model(self, model_name: str = None) -> None:
+        """Unload a specific model or current model to free memory"""
+        import gc
+        
+        if model_name is None:
+            model_name = self._current_model_name
+            
+        if model_name and model_name in self.models:
+            logger.info(f"Unloading model: {model_name}")
+            
+            # Get the model object
+            model = self.models[model_name]
+            
+            # Clean up model attributes
+            if hasattr(model, 'model') and model.model is not None:
+                if hasattr(model.model, 'cpu'):
+                    model.model.cpu()
+                del model.model
+                model.model = None
+                
+            if hasattr(model, 'processor') and model.processor is not None:
+                del model.processor
+                model.processor = None
+                
+            if hasattr(model, 'tokenizer') and model.tokenizer is not None:
+                del model.tokenizer
+                model.tokenizer = None
+            
+            # Remove from cache
+            del self.models[model_name]
+            
+            # Clear current model if it was the one unloaded
+            if model_name == self._current_model_name:
+                self._current_model = None
+                self._current_model_name = None
+            
+            # Force garbage collection and clear CUDA cache
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+            logger.info(f"Successfully unloaded model: {model_name}")
+
+    def clear_all_models(self) -> None:
+        """Unload all cached models to free memory"""
+        model_names = list(self.models.keys())
+        for model_name in model_names:
+            self.unload_model(model_name)
+        logger.info("All models unloaded")
         
     def initialize_model(self, model_name: str) -> object:
         """Initialize a model with error handling, caching, and auto-download support"""
@@ -556,6 +617,11 @@ class ModelManager:
     def get_model(self, model_name: str) -> object:
         """Get a model, initializing if necessary"""
         if self._current_model_name != model_name:
+            # Unload previous model to free memory
+            if self._current_model_name is not None:
+                logger.info(f"Switching from {self._current_model_name} to {model_name}, unloading previous model")
+                self.unload_model(self._current_model_name)
+                
             self._current_model = self.initialize_model(model_name)
             self._current_model_name = model_name
         return self._current_model
@@ -1925,10 +1991,13 @@ def main():
     parser.add_argument('--approved_dir', default='approved', help='Approved directory')
     parser.add_argument('--rejected_dir', default='rejected', help='Rejected directory')
     parser.add_argument('--trigger_word', help='Optional trigger word to add to captions')
-    parser.add_argument('--model', default='florence2', choices=['florence2', 'janus', 'qwen'],
+    parser.add_argument('--model', default='florence2', choices=['florence2', 'janus', 'qwen', 'qwen-captioner'],
                       help='Vision model to use (default: florence2)')
     
     try:
+        # Setup CUDA memory configuration early
+        setup_cuda_memory_config()
+        
         args = parser.parse_args()
         selected_model = args.model
         # if selected_model.lower() == 'florence2':

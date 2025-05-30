@@ -390,11 +390,38 @@ class QwenCaptioner(BaseVisionModel):
                 self._load_clip_as_fallback(reason="process_vision_info_fn not available.")
                 return
             
+            # Clear CUDA cache before loading large model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+                # Check memory status
+                total_memory = torch.cuda.get_device_properties(0).total_memory
+                allocated_memory = torch.cuda.memory_allocated()
+                reserved_memory = torch.cuda.memory_reserved()
+                free_memory = total_memory - allocated_memory
+                
+                total_gb = total_memory / (1024**3)
+                allocated_gb = allocated_memory / (1024**3)
+                reserved_gb = reserved_memory / (1024**3)
+                free_gb = free_memory / (1024**3)
+                
+                logger.info(f"GPU Memory Status - Total: {total_gb:.2f}GB, Allocated: {allocated_gb:.2f}GB, Reserved: {reserved_gb:.2f}GB, Free: {free_gb:.2f}GB")
+                
+                # If insufficient memory, force 4-bit quantization
+                if free_gb < 6.0:  # Need at least 6GB for 7B model with 8-bit
+                    logger.warning(f"Insufficient GPU memory ({free_gb:.2f}GB). Forcing 4-bit quantization.")
+                    self.use_quantization = "4bit"
+                elif free_gb < 10.0:  # Marginal memory, stick with 8-bit
+                    logger.info(f"Moderate GPU memory ({free_gb:.2f}GB). Using 8-bit quantization.")
+                    self.use_quantization = "8bit"
+            
             logger.info(f"Loading Qwen2.5-VL-7B-Captioner-Relaxed model: {self.model_path}")
             
             model_kwargs: Dict[str, Any] = {
                 "torch_dtype": self.torch_dtype,
-                "trust_remote_code": True
+                "trust_remote_code": True,
+                "low_cpu_mem_usage": True,  # Enable low CPU memory usage
             }
             
             # Apply quantization if specified
@@ -407,7 +434,7 @@ class QwenCaptioner(BaseVisionModel):
                     bnb_4bit_use_double_quant=True
                 )
                 model_kwargs["quantization_config"] = bnb_config
-                logger.info("Using 4-bit quantization")
+                logger.info("Using 4-bit quantization for memory efficiency")
             elif self.use_quantization == "8bit":
                 from transformers import BitsAndBytesConfig
                 bnb_config = BitsAndBytesConfig(load_in_8bit=True)
@@ -424,16 +451,16 @@ class QwenCaptioner(BaseVisionModel):
                 model_kwargs["device_map"] = "auto"
                 logger.info("Setting device_map to 'auto'.")
 
-            # Flash Attention for performance
-            if self.device.startswith('cuda') and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
-                try:
-                    import flash_attn 
-                    logger.info("Attempting to enable Flash Attention 2 for QwenCaptioner.")
-                    model_kwargs["attn_implementation"] = "flash_attention_2"
-                except ImportError:
-                    logger.warning("flash_attn library not found. Flash Attention 2 cannot be enabled.")
-                except Exception as e:
-                    logger.warning(f"Could not enable Flash Attention 2: {e}. Proceeding without it.")
+            # Flash Attention for performance (disabled for memory-constrained loading)
+            # if self.device.startswith('cuda') and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
+            #     try:
+            #         import flash_attn 
+            #         logger.info("Attempting to enable Flash Attention 2 for QwenCaptioner.")
+            #         model_kwargs["attn_implementation"] = "flash_attention_2"
+            #     except ImportError:
+            #         logger.warning("flash_attn library not found. Flash Attention 2 cannot be enabled.")
+            #     except Exception as e:
+            #         logger.warning(f"Could not enable Flash Attention 2: {e}. Proceeding without it.")
             
             self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
             logger.info(f"Successfully loaded QwenCaptioner model: {self.model_path} with kwargs: {model_kwargs}")
@@ -444,7 +471,37 @@ class QwenCaptioner(BaseVisionModel):
 
         except Exception as e:
             logger.error(f"Failed to initialize QwenCaptioner model: {str(e)}")
-            self._load_clip_as_fallback(reason=f"QwenCaptioner load failed: {e}")
+            # Clear cache and try with CPU fallback for CLIP
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            self._load_clip_as_fallback_cpu(reason=f"QwenCaptioner load failed: {e}")
+
+    def _load_clip_as_fallback_cpu(self, reason: str) -> None:
+        """Load CLIP model on CPU as fallback when GPU memory is insufficient."""
+        logger.warning(f"Attempting to load CLIP model on CPU as fallback due to: {reason}")
+        try:
+            global CLIPModel, CLIPProcessor
+            if CLIPModel is None or CLIPProcessor is None:
+                from transformers import CLIPModel as DynamicCLIPModel, CLIPProcessor as DynamicCLIPProcessor
+                CLIPModel = DynamicCLIPModel
+                CLIPProcessor = DynamicCLIPProcessor
+                if CLIPModel is None or CLIPProcessor is None:
+                    raise ImportError("CLIPModel/CLIPProcessor not available for fallback.")
+
+            fallback_model_id = "openai/clip-vit-base-patch32"
+            logger.info(f"Loading fallback CLIP model on CPU: {fallback_model_id}")
+
+            # Force CPU usage for fallback
+            self.model = CLIPModel.from_pretrained(fallback_model_id, torch_dtype=torch.float32).to("cpu")
+            self.processor = CLIPProcessor.from_pretrained(fallback_model_id)
+            self.device = "cpu"  # Override device for fallback
+            self.tokenizer = None 
+            
+            logger.info(f"Successfully loaded CLIP model as CPU fallback: {fallback_model_id}")
+            self._using_fallback = True
+        except Exception as fallback_error:
+            logger.error(f"Failed to load CLIP CPU fallback model: {str(fallback_error)}")
+            raise RuntimeError(f"QwenCaptioner model setup failed, and CPU fallback CLIP model also failed to load: {fallback_error}") from fallback_error
 
     def get_instruction_for_quality(self, quality: str) -> str:
         """Get appropriate instruction based on quality setting"""
