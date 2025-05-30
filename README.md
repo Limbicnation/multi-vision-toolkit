@@ -1,5 +1,5 @@
 # Multi-Vision Toolkit 🖼️ 🤖
- A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, and Qwen2.5-VL), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
+ A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen2.5-VL-7B-Captioner-Relaxed), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 <p align="center">
   <img src="images/Vision-Toolkit_DarkMode_2025-03-05.jpg" width="49%" alt="Vision Toolkit Dark Mode">
@@ -8,7 +8,7 @@
 
 ## 🚀 Key Features
 
-- **Multiple Vision Models**: Florence-2 (advanced vision tasks), Janus-Pro-1B (advanced multimodal understanding), and Qwen2.5-VL (high-quality captioning and analysis)
+- **Multiple Vision Models**: Florence-2 (advanced vision tasks), Janus-Pro-1B (advanced multimodal understanding), Qwen2.5-VL (high-quality captioning and analysis), and Qwen2.5-VL-7B-Captioner-Relaxed (specialized detailed captioning)
 - **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and Janus-Pro-1B)
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation

@@ -78,6 +78,52 @@ class QwenModel(BaseVisionModel):
         self.tokenizer = None 
         super().__init__()
 
+    def _setup_model(self) -> None:
+        """Setup the Qwen model."""
+        super()._setup_model()
+
+    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+        """Analyze a single image."""
+        return super().analyze_image(image_path, quality)
+
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+        """Analyze multiple images in batch."""
+        return super().analyze_images_batch(image_paths, quality)
+
+    @classmethod
+    def _check_dependencies(cls) -> None:
+        missing_packages = []
+        for package, pip_name in cls.REQUIRED_PACKAGES.items():
+            if package == 'flash_attn': 
+                try:
+                    importlib.import_module(package)
+                except ImportError:
+                    logger.warning("flash_attn not found. For optimal performance, install with 'pip install flash-attn --no-build-isolation'.")
+                continue
+
+            try:
+                importlib.import_module(package)
+                if package == 'transformers' and not _QWEN_CLASS_AVAILABLE:
+                    missing_packages.append((package, f"{pip_name} (Qwen2_5_VLForConditionalGeneration class not found. Ensure latest git version.)"))
+                elif package == 'qwen_vl_utils' and process_vision_info_fn is None:
+                     missing_packages.append((package, pip_name))
+            except ImportError:
+                missing_packages.append((package, pip_name))
+        
+        if missing_packages:
+            install_commands = []
+            for pkg, name in missing_packages:
+                if "transformers" in name:
+                    install_commands.append("pip install git+https://github.com/huggingface/transformers.git --upgrade")
+                else:
+                    install_commands.append(f"pip install {name}")
+            
+            error_msg = (
+                f"Missing required packages/classes for QwenModel: {', '.join(pkg[0] for pkg in missing_packages)}\n"
+                f"Please install or update them.\nExample install commands:\n" + "\n".join(install_commands)
+            )
+            logger.error(error_msg)
+
 
 class QwenCaptioner(BaseVisionModel):
     """Qwen2.5-VL-7B-Captioner-Relaxed model implementation optimized for detailed captions."""
@@ -204,7 +250,7 @@ class QwenCaptioner(BaseVisionModel):
             with torch.inference_mode():
                 generated_ids = self.model.generate(**inputs, **generation_params)
             
-            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)]
+            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
             caption = self.processor.batch_decode(
                 generated_ids_trimmed, 
                 skip_special_tokens=True, 
@@ -482,7 +528,7 @@ class QwenCaptioner(BaseVisionModel):
             with torch.inference_mode():
                 generated_ids = self.model.generate(**inputs, **generation_params)
             
-            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)]
+            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
             caption = self.processor.batch_decode(
                 generated_ids_trimmed, 
                 skip_special_tokens=True, 
