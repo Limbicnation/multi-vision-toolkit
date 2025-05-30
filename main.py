@@ -642,7 +642,7 @@ class ReviewGUI:
         approved_dir: str, 
         rejected_dir: str, 
         trigger_word: Optional[str] = None,
-        model_name: str = "florence2"
+        model_name: str = "qwen-captioner"
     ):
         logger.info(f"Initializing ReviewGUI with model: {model_name}")
         self.review_dir = Path(review_dir)
@@ -1951,8 +1951,8 @@ def main():
     parser.add_argument('--approved_dir', default='approved', help='Approved directory')
     parser.add_argument('--rejected_dir', default='rejected', help='Rejected directory')
     parser.add_argument('--trigger_word', help='Optional trigger word to add to captions')
-    parser.add_argument('--model', default='florence2', choices=['florence2', 'qwen-captioner'],
-                      help='Vision model to use (default: florence2)')
+    parser.add_argument('--model', default='qwen-captioner', choices=['florence2', 'qwen-captioner'],
+                      help='Vision model to use (default: qwen-captioner)')
     
     try:
         # Setup CUDA memory configuration early
