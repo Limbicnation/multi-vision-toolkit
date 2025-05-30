@@ -272,7 +272,13 @@ class Florence2Model(BaseVisionModel):
             else: extra_package = "pip install timm==0.9.12 safetensors einops" # General recommendation
             
             # Platform-specific installation commands
-            if sys.platform == "win32" or ("microsoft" in os.uname().release.lower() and sys.platform == "linux"): # WSL check
+            try:
+                is_wsl = sys.platform == "linux" and "microsoft" in os.uname().release.lower()
+            except AttributeError:
+                # os.uname() not available on Windows
+                is_wsl = False
+            
+            if sys.platform == "win32" or is_wsl: # Windows or WSL check
                 torch_install = "pip install torch==2.6.0 torchvision==0.17.0 --index-url https://download.pytorch.org/whl/cu121" # Assuming CUDA 12.1
             elif sys.platform == "darwin" and platform.processor() == "arm": # Apple Silicon
                 torch_install = "pip install torch==2.6.0 torchvision==0.17.0" # MPS support

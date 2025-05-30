@@ -9,6 +9,7 @@ from tkinter import ttk, messagebox, filedialog
 import shutil
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
+import threading
 
 # Apply encoding fix for Qwen model
 try:
@@ -139,7 +140,8 @@ if "HF_TOKEN" in os.environ:
     try:
         # Try to set HF_HUB_TOKEN as well, which is sometimes used
         os.environ["HF_HUB_TOKEN"] = os.environ["HF_TOKEN"]
-    except:
+    except KeyError:
+        # HF_TOKEN not found, which is fine
         pass
 else:
     logger.info("No HuggingFace token found. Some models may be unavailable or have limited functionality.")
@@ -184,7 +186,8 @@ except Exception as e:
     try:
         from models.dummy_janus_model import JanusModel
         logger.warning("Using dummy JanusModel as last resort")
-    except:
+    except ImportError as e:
+        logger.error(f"Failed to import dummy JanusModel: {e}")
         JanusModel = None
 
 try:
@@ -228,7 +231,8 @@ except Exception as e:
     try:
         from models.dummy_qwen_model import QwenModel
         logger.warning("Using dummy QwenModel as last resort")
-    except:
+    except ImportError as e:
+        logger.error(f"Failed to import dummy QwenModel: {e}")
         QwenModel = None
 
 # Import QwenCaptioner
@@ -593,13 +597,142 @@ class DatasetPreparator:
         
     def is_supported_image(self, path) -> bool:
         """Check if a file is a supported image type"""
-        path_obj = Path(path)
-        
-        # Check if path exists and is a file (not a directory)
-        if path_obj.exists() and not path_obj.is_file():
-            return False
+        try:
+            path_obj = Path(path)
             
-        return path_obj.suffix.lower() in {'.jpg', '.jpeg', '.png'}
+            # Check if path exists and is a file (not a directory)
+            if not path_obj.exists() or not path_obj.is_file():
+                return False
+            
+            # Check file extension
+            if path_obj.suffix.lower() not in {'.jpg', '.jpeg', '.png'}:
+                return False
+            
+            # Check if file is not empty
+            if path_obj.stat().st_size == 0:
+                return False
+                
+            return True
+        except (OSError, ValueError, PermissionError):
+            return False
+    
+    def _cache_get(self, key: str) -> Optional[Tuple[str, str]]:
+        """Thread-safe cache get operation"""
+        with self.cache_lock:
+            return self.image_cache.get(key)
+    
+    def _cache_set(self, key: str, value: Tuple[str, str]) -> None:
+        """Thread-safe cache set operation with size limits"""
+        with self.cache_lock:
+            # Remove oldest entries if cache is full
+            if len(self.image_cache) >= self.max_cache_size:
+                # Remove the first 20% of entries (FIFO)
+                keys_to_remove = list(self.image_cache.keys())[:self.max_cache_size // 5]
+                for old_key in keys_to_remove:
+                    self.image_cache.pop(old_key, None)
+                logger.info(f"Cache cleanup: removed {len(keys_to_remove)} entries")
+            
+            self.image_cache[key] = value
+    
+    def _cache_clear(self) -> None:
+        """Thread-safe cache clear operation"""
+        with self.cache_lock:
+            self.image_cache.clear()
+    
+    def _cleanup_image_resources(self) -> None:
+        """Clean up PIL image resources"""
+        try:
+            # Clear any existing image reference
+            if hasattr(self, 'img_label') and hasattr(self.img_label, 'image'):
+                self.img_label.image = None
+                self.img_label.configure(image='')
+        except Exception as e:
+            logger.warning(f"Error cleaning up image resources: {e}")
+    
+    def cleanup(self) -> None:
+        """Clean up all resources before shutdown"""
+        try:
+            logger.info("Starting application cleanup...")
+            
+            # Clear image cache and resources
+            self._cache_clear()
+            self._cleanup_image_resources()
+            
+            # Clean up model resources
+            if hasattr(self, 'model_manager') and self.model_manager:
+                self.model_manager.unload_model()
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            logger.info("Application cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+    
+    def _on_closing(self) -> None:
+        """Handle application close event"""
+        try:
+            logger.info("Application closing...")
+            self.cleanup()
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            logger.error(f"Error during application close: {e}")
+            # Force close
+            import sys
+            sys.exit(1)
+    
+    def _cache_contains(self, key: str) -> bool:
+        """Thread-safe cache membership test"""
+        with self.cache_lock:
+            return key in self.image_cache
+    
+    def _cache_items(self) -> List[Tuple[str, Tuple[str, str]]]:
+        """Thread-safe cache items iteration"""
+        with self.cache_lock:
+            return list(self.image_cache.items())
+    
+    def _atomic_write_text(self, file_path: Path, content: str, encoding: str = 'utf-8') -> None:
+        """Atomic file write operation using temp file + rename"""
+        import tempfile
+        import os
+        
+        # Create temp file in same directory to ensure atomic move
+        temp_fd = None
+        temp_path = None
+        try:
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix='.tmp',
+                prefix=f'.{file_path.name}.',
+                dir=file_path.parent
+            )
+            
+            # Write to temp file
+            with os.fdopen(temp_fd, 'w', encoding=encoding) as temp_file:
+                temp_file.write(content)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())  # Force write to disk
+            temp_fd = None  # File is now closed
+            
+            # Atomic move
+            temp_path_obj = Path(temp_path)
+            temp_path_obj.replace(file_path)  # Atomic on POSIX/Windows
+            temp_path = None  # Successfully moved
+            
+        except Exception as e:
+            # Cleanup on error
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+            if temp_path and Path(temp_path).exists():
+                try:
+                    Path(temp_path).unlink()
+                except OSError:
+                    pass
+            raise e
         
     def create_caption_file(self, image_path: str, caption: str) -> str:
         """Create a caption text file for the given image"""
@@ -607,7 +740,7 @@ class DatasetPreparator:
             txt_path = Path(image_path).with_suffix('.txt')
             # Ensure parent directory exists
             txt_path.parent.mkdir(parents=True, exist_ok=True)
-            txt_path.write_text(caption, encoding='utf-8')
+            self._atomic_write_text(txt_path, caption)
             return str(txt_path)
         except Exception as e:
             logger.error(f"Error creating caption file: {str(e)}")
@@ -625,7 +758,7 @@ class ReviewGUI:
             
             # Update JSON file
             data = {"results": {"caption": description}}
-            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+            self._atomic_write_text(json_path, json.dumps(data, indent=2))
             
             # Update TXT file
             if clean_caption:
@@ -682,8 +815,10 @@ class ReviewGUI:
             dir_path.mkdir(parents=True, exist_ok=True)
             logger.info(f"Created/verified directory: {dir_path}")
         
-        # Image caching
+        # Image caching with thread safety and size limits
         self.image_cache = {}
+        self.cache_lock = threading.RLock()  # Reentrant lock for nested calls
+        self.max_cache_size = 100  # Limit cache to prevent memory exhaustion
         self.preload_queue = []
         
         # Initialize TK with drag and drop support if available
@@ -695,6 +830,9 @@ class ReviewGUI:
         self.root.title("Multi-Vision Toolkit")
         self.root.geometry("1280x800")
         self.root.minsize(1024, 768)
+        
+        # Set up proper cleanup on window close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_closing)
         
         # Initialize theme manager
         self.theme_manager = ThemeManager(self.root)
@@ -1091,9 +1229,8 @@ class ReviewGUI:
                         except Exception as e:
                             result_queue.put(("error", e))
                     
-                    # Start loading thread
+                    # Start loading thread (not daemon to ensure completion)
                     loading_thread = threading.Thread(target=load_model_thread)
-                    loading_thread.daemon = True
                     loading_thread.start()
                     
                     # Check queue every 100ms
@@ -1250,9 +1387,9 @@ class ReviewGUI:
                     json_path = f.parent / f"{base_name}_for_review.json"
                     
                     if not json_path.exists():
-                        json_path.write_text(
-                            json.dumps({"results": {"caption": ""}}, indent=2),
-                            encoding='utf-8'
+                        self._atomic_write_text(
+                            json_path,
+                            json.dumps({"results": {"caption": ""}}, indent=2)
                         )
                     
                     self.items.append((base_name, json_path, img_path))
@@ -1319,6 +1456,9 @@ class ReviewGUI:
         """Display current image with error handling"""
         if not self.items:
             return
+        
+        # Clean up previous image resources
+        self._cleanup_image_resources()
             
         try:
             self.status_label.config(text="Loading image...")
@@ -1335,9 +1475,10 @@ class ReviewGUI:
 
             try:
                 # Check cache first
-                if str(img_path) in self.image_cache:
+                cache_result = self._cache_get(str(img_path))
+                if cache_result is not None:
                     logger.info(f"Using cached analysis for {img_path}")
-                    description, clean_caption = self.image_cache[str(img_path)]
+                    description, clean_caption = cache_result
                 else: 
                     # Image not in cache, so analyze it
                     self.status_label.config(text=f"Analyzing image with {self.model_name} model...")
@@ -1364,7 +1505,7 @@ class ReviewGUI:
                         
                         # Cache the result
                         if description and not description.startswith("Error:"): # Only cache successful analysis
-                            self.image_cache[str(img_path)] = (description, clean_caption)
+                            self._cache_set(str(img_path), (description, clean_caption))
 
                     except Exception as analyze_error:
                         logger.error(f"Error during model analysis for {img_path.name}: {str(analyze_error)}")
@@ -1401,6 +1542,9 @@ class ReviewGUI:
             
             if scale < 1: # Only resize if image is larger than display area
                 new_width, new_height = int(img_width * scale), int(img_height * scale)
+                # Ensure dimensions are valid (minimum 1x1)
+                new_width = max(1, new_width)
+                new_height = max(1, new_height)
                 img = img.resize((new_width, new_height), Image.LANCZOS)
             
             photo = ImageTk.PhotoImage(img)
@@ -1419,7 +1563,7 @@ class ReviewGUI:
             if clean_caption: # Only add clean_caption if it exists
                 data_to_save["results"]["clean_caption_for_txt"] = clean_caption
 
-            json_path.write_text(json.dumps(data_to_save, indent=2), encoding='utf-8')
+            self._atomic_write_text(json_path, json.dumps(data_to_save, indent=2))
             
             if clean_caption: # Only create .txt if clean_caption is valid
                 self.dataset_prep.create_caption_file(str(img_path), clean_caption)
@@ -1452,21 +1596,22 @@ class ReviewGUI:
             if self.current + i < len(self.items)
         ]
         
-        import threading
-        
         def preload_worker(idx):
             try:
                 _, _, img_path = self.items[idx]
-                if str(img_path) not in self.image_cache:
+                if not self._cache_contains(str(img_path)):
                     logger.info(f"Preloading analysis for {img_path}")
                     description, clean_caption = self.model.analyze_image(str(img_path))
-                    self.image_cache[str(img_path)] = (description, clean_caption)
+                    self._cache_set(str(img_path), (description, clean_caption))
             except Exception as e:
                 logger.error(f"Error preloading image {idx}: {str(e)}")
         
-        # Start preloading threads
+        # Start preloading threads (not daemon for better cleanup)
+        threads = []
         for idx in next_indices:
-            threading.Thread(target=preload_worker, args=(idx,), daemon=True).start()
+            thread = threading.Thread(target=preload_worker, args=(idx,))
+            thread.start()
+            threads.append(thread)
 
     def move_item(self, dest_dir: Path):
         """Move current item to destination directory with error handling"""
@@ -1493,7 +1638,7 @@ class ReviewGUI:
                 data['timestamp'] = datetime.now().isoformat()
                 
                 new_json_path = dest_dir / f"{base_name}_reviewed.json"
-                new_json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                self._atomic_write_text(new_json_path, json.dumps(data, indent=2))
                 json_path.unlink()
                 
             self.items.pop(self.current)
@@ -1555,7 +1700,7 @@ class ReviewGUI:
             try:
                 data = json.loads(json_path.read_text(encoding='utf-8'))
                 data["results"]["caption"] = edited_text
-                json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                self._atomic_write_text(json_path, json.dumps(data, indent=2))
             except Exception as e:
                 logger.warning(f"Could not update JSON file: {str(e)}")
             
@@ -1565,10 +1710,10 @@ class ReviewGUI:
                 caption_to_save = f"{self.trigger_word}, {clean_caption}"
                 
             txt_path = img_path.with_suffix('.txt')
-            txt_path.write_text(caption_to_save, encoding='utf-8')
+            self._atomic_write_text(txt_path, caption_to_save)
             
             # Update cache
-            self.image_cache[str(img_path)] = (edited_text, clean_caption)
+            self._cache_set(str(img_path), (edited_text, clean_caption))
             
             self.status_label.config(text="Caption updated successfully")
             logger.info(f"Updated caption for {img_path.name}")
@@ -1653,9 +1798,9 @@ class ReviewGUI:
                     json_path = img_path.parent / f"{base_name}_for_review.json"
                     
                     if not json_path.exists():
-                        json_path.write_text(
-                            json.dumps({"results": {"caption": ""}}, indent=2),
-                            encoding='utf-8'
+                        self._atomic_write_text(
+                            json_path,
+                            json.dumps({"results": {"caption": ""}}, indent=2)
                         )
                     
                     temp_items.append((base_name, json_path, img_path))
@@ -1724,7 +1869,7 @@ class ReviewGUI:
                             logger.warning(f"Error exporting {img_path.name}: {str(e)}")
                             
                     # Export cached items that might not be in the current items list
-                    for path_str, (description, _) in self.image_cache.items():
+                    for path_str, (description, _) in self._cache_items():
                         path = Path(path_str)
                         # Check if this path is already in the items list
                         if not any(str(img_path) == path_str for _, _, img_path in self.items):
@@ -1756,7 +1901,7 @@ class ReviewGUI:
                         logger.warning(f"Error exporting {img_path.name}: {str(e)}")
                 
                 # Export cached items that might not be in the current items list
-                for path_str, (description, _) in self.image_cache.items():
+                for path_str, (description, _) in self._cache_items():
                     path = Path(path_str)
                     # Check if this path is already in the items list
                     if not any(str(img_path) == path_str for _, _, img_path in self.items):
@@ -1873,11 +2018,12 @@ class ReviewGUI:
                     paths_needing_analysis_str = []
                     
                     for item_idx, (base_name, json_path, img_path) in enumerate(current_batch_items):
-                        if str(img_path) in self.image_cache:
-                            description, clean_caption = self.image_cache[str(img_path)]
+                        cache_result = self._cache_get(str(img_path))
+                        if cache_result is not None:
+                            description, clean_caption = cache_result
                             # Save already cached results
                             data = {"results": {"caption": description}}
-                            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                            self._atomic_write_text(json_path, json.dumps(data, indent=2))
                             if self.trigger_word and clean_caption:
                                 clean_caption = f"{self.trigger_word}, {clean_caption}"
                             if clean_caption:
@@ -1895,7 +2041,7 @@ class ReviewGUI:
                             # Get original item details for the analyzed image
                             original_item_base_name, original_item_json_path, original_item_img_path = items_needing_analysis[i]
                             
-                            self.image_cache[str(original_item_img_path)] = (description, clean_caption)
+                            self._cache_set(str(original_item_img_path), (description, clean_caption))
                             
                             # Apply trigger word if needed
                             if self.trigger_word and clean_caption:
@@ -1903,7 +2049,7 @@ class ReviewGUI:
                             
                             # Save analysis results
                             data = {"results": {"caption": description}}
-                            original_item_json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+                            self._atomic_write_text(original_item_json_path, json.dumps(data, indent=2))
                             
                             if clean_caption:
                                 self.dataset_prep.create_caption_file(str(original_item_img_path), clean_caption)
@@ -1916,12 +2062,12 @@ class ReviewGUI:
                     logger.error(f"Error in batch processing worker for batch starting with {current_batch_paths_str[0] if current_batch_paths_str else 'N/A'}: {str(e)}")
                     # Mark items in this failed batch as errored if not already processed
                     for base_name, json_path, img_path in current_batch_items:
-                        if str(img_path) not in self.image_cache: # Avoid overwriting successfully cached items
+                        if not self._cache_contains(str(img_path)): # Avoid overwriting successfully cached items
                              # Create a minimal error entry
                             error_description = f"Error during batch processing: {str(e)}"
                             data = {"results": {"caption": error_description}}
-                            json_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
-                            self.image_cache[str(img_path)] = (error_description, None) # Cache error state
+                            self._atomic_write_text(json_path, json.dumps(data, indent=2))
+                            self._cache_set(str(img_path), (error_description, None)) # Cache error state
                             processed[0] += 1 # Count as processed (with error)
                     progress_var.set(processed[0])
 
@@ -1994,5 +2140,6 @@ if __name__ == "__main__":
                     "Application Error",
                     f"An unexpected error occurred:\n\n{str(e)}\n\nCheck log file for details."
                 )
-        except:
+        except (ImportError, AttributeError, RuntimeError):
+            # GUI not available or already destroyed
             pass
