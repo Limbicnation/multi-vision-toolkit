@@ -450,47 +450,6 @@ class ModelManager:
                     )
                     model = Florence2Model()
                     
-                elif model_name.lower() == "janus":
-                    logger.info(f"JanusModel class available: {JanusModel is not None}")
-                    if JanusModel is None:
-                        raise ImportError("JanusModel is not available")
-                    
-                    # Show downloading notification to the user
-                    messagebox.showinfo(
-                        "Model Download",
-                        "The Janus model will be downloaded if not available locally.\n\n"
-                        "This may take a few minutes on the first run. Please be patient."
-                    )
-                    model = JanusModel()
-                    
-                elif model_name.lower() == "qwen":
-                    logger.info(f"QwenModel class available: {QwenModel is not None}")
-                    if QwenModel is None:
-                        # Last attempt to import QwenModel directly here
-                        try:
-                            logger.info("Last attempt to import QwenModel...")
-                            from models.qwen_model import QwenModel as DirectQwenModel
-                            
-                            # Show downloading notification to the user
-                            messagebox.showinfo(
-                                "Model Download",
-                                "The Qwen2.5-VL-3B-Instruct model will be downloaded if not available locally.\n\n"
-                                "This may take a few minutes on the first run. Please be patient."
-                            )
-                            model = DirectQwenModel()
-                            
-                        except ImportError as qwen_error:
-                            logger.error(f"QwenModel import failed: {str(qwen_error)}")
-                            raise ImportError(f"QwenModel is not available: {str(qwen_error)}")
-                    else:
-                        # Show downloading notification to the user
-                        messagebox.showinfo(
-                            "Model Download",
-                            "The Qwen2.5-VL-3B-Instruct model will be downloaded if not available locally.\n\n"
-                            "This may take a few minutes on the first run. Please be patient."
-                        )
-                        model = QwenModel()
-                    
                 elif model_name.lower() == "qwen-captioner":
                     logger.info(f"QwenCaptioner class available: {QwenCaptioner is not None}")
                     if QwenCaptioner is None:
@@ -500,7 +459,8 @@ class ModelManager:
                     messagebox.showinfo(
                         "Model Download",
                         "The Qwen2.5-VL-7B-Captioner-Relaxed model will be downloaded if not available locally.\n\n"
-                        "This is a larger model (~13GB) and will take longer to download. Please be patient."
+                        "This is a larger model (~13GB) and will take longer to download. Please be patient.\n\n"
+                        "The model will automatically use 4-bit quantization for memory efficiency."
                     )
                     model = QwenCaptioner()
                     
@@ -572,7 +532,7 @@ class ModelManager:
                 messagebox.showerror("Model Error", error_message)
                 
                 # Ask if user wants to try another model
-                fallback_options = [m for m in ["florence2", "qwen", "janus", "qwen-captioner"] if m != model_name.lower()]
+                fallback_options = [m for m in ["florence2", "qwen-captioner"] if m != model_name.lower()]
                 if fallback_options:
                     fallback_message = f"Would you like to try the {fallback_options[0]} model instead?"
                     if messagebox.askyesno("Try Alternative Model", fallback_message):
@@ -792,7 +752,7 @@ class ReviewGUI:
         model_combo = ttk.Combobox(
             controls_frame, 
             textvariable=self.model_var,
-            values=["florence2", "janus", "qwen", "qwen-captioner"],
+            values=["florence2", "qwen-captioner"],
             state="readonly",
             width=10
         )
@@ -1991,7 +1951,7 @@ def main():
     parser.add_argument('--approved_dir', default='approved', help='Approved directory')
     parser.add_argument('--rejected_dir', default='rejected', help='Rejected directory')
     parser.add_argument('--trigger_word', help='Optional trigger word to add to captions')
-    parser.add_argument('--model', default='florence2', choices=['florence2', 'janus', 'qwen', 'qwen-captioner'],
+    parser.add_argument('--model', default='florence2', choices=['florence2', 'qwen-captioner'],
                       help='Vision model to use (default: florence2)')
     
     try:

@@ -227,8 +227,17 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(f"Error loading image {image_path}: {str(e)}")
             return "Error: Failed to load or process image.", None
 
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE]):
-            logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
+        # Debug component availability for QwenCaptioner
+        logger.debug(f"QwenCaptioner component status:")
+        logger.debug(f"  _using_fallback: {getattr(self, '_using_fallback', False)}")
+        logger.debug(f"  self.model: {self.model is not None}")
+        logger.debug(f"  self.processor: {self.processor is not None}")
+        logger.debug(f"  self.tokenizer: {self.tokenizer is not None}")
+        logger.debug(f"  _QWEN_CLASS_AVAILABLE: {_QWEN_CLASS_AVAILABLE}")
+        
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, _QWEN_CLASS_AVAILABLE]):
+            logger.warning("QwenCaptioner using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
+            logger.warning(f"Reason: _using_fallback={getattr(self, '_using_fallback', False)}, model={self.model is not None}, processor={self.processor is not None}, class_available={_QWEN_CLASS_AVAILABLE}")
             return self._analyze_with_clip(pil_image, quality)
 
         # Use captioner-specific instruction
@@ -481,23 +490,39 @@ class QwenCaptioner(BaseVisionModel):
                 model_kwargs["device_map"] = "auto"
                 logger.info("Setting device_map to 'auto'.")
 
-            # Flash Attention for performance (disabled for memory-constrained loading)
-            # if self.device.startswith('cuda') and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
-            #     try:
-            #         import flash_attn 
-            #         logger.info("Attempting to enable Flash Attention 2 for QwenCaptioner.")
-            #         model_kwargs["attn_implementation"] = "flash_attention_2"
-            #     except ImportError:
-            #         logger.warning("flash_attn library not found. Flash Attention 2 cannot be enabled.")
-            #     except Exception as e:
-            #         logger.warning(f"Could not enable Flash Attention 2: {e}. Proceeding without it.")
+            # Enable Flash Attention for performance if available
+            if self.device.startswith('cuda') and not self.use_quantization:
+                try:
+                    import flash_attn 
+                    logger.info("Attempting to enable Flash Attention 2 for QwenCaptioner.")
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                except ImportError:
+                    logger.info("flash_attn library not found. Using eager attention (slower but more compatible).")
+                    model_kwargs["attn_implementation"] = "eager"
+                except Exception as e:
+                    logger.warning(f"Could not enable Flash Attention 2: {e}. Using eager attention.")
+                    model_kwargs["attn_implementation"] = "eager"
+            elif self.device.startswith('cuda'):
+                # Use eager attention for quantized models for compatibility
+                model_kwargs["attn_implementation"] = "eager"
+                logger.info("Using eager attention for quantized model.")
             
             self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
             logger.info(f"Successfully loaded QwenCaptioner model: {self.model_path} with kwargs: {model_kwargs}")
             
-            self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
+            # Set up processor with pixel limits for cost/quality balance
+            min_pixels = 256*28*28
+            max_pixels = 1280*28*28
+            
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_path, 
+                trust_remote_code=True,
+                max_pixels=max_pixels,
+                min_pixels=min_pixels
+            )
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
             logger.info(f"Successfully loaded QwenCaptioner processor and tokenizer for {self.model_path}")
+            logger.info(f"Processor configured with min_pixels={min_pixels}, max_pixels={max_pixels}")
 
         except Exception as e:
             logger.error(f"Failed to initialize QwenCaptioner model: {str(e)}")
@@ -586,7 +611,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(f"Error loading image {image_path}: {str(e)}")
             return "Error: Failed to load or process image.", None
 
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE]):
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, _QWEN_CLASS_AVAILABLE]):
             logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             return self._analyze_with_clip(pil_image, quality)
 
@@ -672,7 +697,7 @@ class QwenCaptioner(BaseVisionModel):
         if not actual_pil_images:
             return [res if res is not None else ("Error: No valid images to process.", None) for res in results]
 
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE]):
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, _QWEN_CLASS_AVAILABLE]):
             logger.info("Using fallback CLIP model for batch image analysis.")
             clip_batch_results = self._analyze_batch_with_clip(actual_pil_images, quality)
             for i, res_tuple in enumerate(clip_batch_results):
