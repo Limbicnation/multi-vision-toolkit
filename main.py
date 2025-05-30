@@ -616,83 +616,6 @@ class DatasetPreparator:
         except (OSError, ValueError, PermissionError):
             return False
     
-    def _cache_get(self, key: str) -> Optional[Tuple[str, str]]:
-        """Thread-safe cache get operation"""
-        with self.cache_lock:
-            return self.image_cache.get(key)
-    
-    def _cache_set(self, key: str, value: Tuple[str, str]) -> None:
-        """Thread-safe cache set operation with size limits"""
-        with self.cache_lock:
-            # Remove oldest entries if cache is full
-            if len(self.image_cache) >= self.max_cache_size:
-                # Remove the first 20% of entries (FIFO)
-                keys_to_remove = list(self.image_cache.keys())[:self.max_cache_size // 5]
-                for old_key in keys_to_remove:
-                    self.image_cache.pop(old_key, None)
-                logger.info(f"Cache cleanup: removed {len(keys_to_remove)} entries")
-            
-            self.image_cache[key] = value
-    
-    def _cache_clear(self) -> None:
-        """Thread-safe cache clear operation"""
-        with self.cache_lock:
-            self.image_cache.clear()
-    
-    def _cleanup_image_resources(self) -> None:
-        """Clean up PIL image resources"""
-        try:
-            # Clear any existing image reference
-            if hasattr(self, 'img_label') and hasattr(self.img_label, 'image'):
-                self.img_label.image = None
-                self.img_label.configure(image='')
-        except Exception as e:
-            logger.warning(f"Error cleaning up image resources: {e}")
-    
-    def cleanup(self) -> None:
-        """Clean up all resources before shutdown"""
-        try:
-            logger.info("Starting application cleanup...")
-            
-            # Clear image cache and resources
-            self._cache_clear()
-            self._cleanup_image_resources()
-            
-            # Clean up model resources
-            if hasattr(self, 'model_manager') and self.model_manager:
-                self.model_manager.unload_model()
-            
-            # Force garbage collection
-            import gc
-            gc.collect()
-            
-            logger.info("Application cleanup completed")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
-    
-    def _on_closing(self) -> None:
-        """Handle application close event"""
-        try:
-            logger.info("Application closing...")
-            self.cleanup()
-            self.root.quit()
-            self.root.destroy()
-        except Exception as e:
-            logger.error(f"Error during application close: {e}")
-            # Force close
-            import sys
-            sys.exit(1)
-    
-    def _cache_contains(self, key: str) -> bool:
-        """Thread-safe cache membership test"""
-        with self.cache_lock:
-            return key in self.image_cache
-    
-    def _cache_items(self) -> List[Tuple[str, Tuple[str, str]]]:
-        """Thread-safe cache items iteration"""
-        with self.cache_lock:
-            return list(self.image_cache.items())
-    
     def _atomic_write_text(self, file_path: Path, content: str, encoding: str = 'utf-8') -> None:
         """Atomic file write operation using temp file + rename"""
         import tempfile
@@ -733,7 +656,7 @@ class DatasetPreparator:
                 except OSError:
                     pass
             raise e
-        
+    
     def create_caption_file(self, image_path: str, caption: str) -> str:
         """Create a caption text file for the given image"""
         try:
@@ -2090,6 +2013,124 @@ class ReviewGUI:
         logger.info(f"Starting {num_workers} worker thread(s) for batch processing.")
         for _ in range(num_workers):
             threading.Thread(target=worker, daemon=True).start()
+    
+    def _cache_get(self, key: str) -> Optional[Tuple[str, str]]:
+        """Thread-safe cache get operation"""
+        with self.cache_lock:
+            return self.image_cache.get(key)
+    
+    def _cache_set(self, key: str, value: Tuple[str, str]) -> None:
+        """Thread-safe cache set operation with size limits"""
+        with self.cache_lock:
+            # Remove oldest entries if cache is full
+            if len(self.image_cache) >= self.max_cache_size:
+                # Remove the first 20% of entries (FIFO)
+                keys_to_remove = list(self.image_cache.keys())[:self.max_cache_size // 5]
+                for old_key in keys_to_remove:
+                    self.image_cache.pop(old_key, None)
+                logger.info(f"Cache cleanup: removed {len(keys_to_remove)} entries")
+            
+            self.image_cache[key] = value
+    
+    def _cache_clear(self) -> None:
+        """Thread-safe cache clear operation"""
+        with self.cache_lock:
+            self.image_cache.clear()
+    
+    def _cache_contains(self, key: str) -> bool:
+        """Thread-safe cache membership test"""
+        with self.cache_lock:
+            return key in self.image_cache
+    
+    def _cache_items(self) -> List[Tuple[str, Tuple[str, str]]]:
+        """Thread-safe cache items iteration"""
+        with self.cache_lock:
+            return list(self.image_cache.items())
+    
+    def _atomic_write_text(self, file_path: Path, content: str, encoding: str = 'utf-8') -> None:
+        """Atomic file write operation using temp file + rename"""
+        import tempfile
+        import os
+        
+        # Create temp file in same directory to ensure atomic move
+        temp_fd = None
+        temp_path = None
+        try:
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix='.tmp',
+                prefix=f'.{file_path.name}.',
+                dir=file_path.parent
+            )
+            
+            # Write to temp file
+            with os.fdopen(temp_fd, 'w', encoding=encoding) as temp_file:
+                temp_file.write(content)
+                temp_file.flush()
+                os.fsync(temp_file.fileno())  # Force write to disk
+            temp_fd = None  # File is now closed
+            
+            # Atomic move
+            temp_path_obj = Path(temp_path)
+            temp_path_obj.replace(file_path)  # Atomic on POSIX/Windows
+            temp_path = None  # Successfully moved
+            
+        except Exception as e:
+            # Cleanup on error
+            if temp_fd is not None:
+                try:
+                    os.close(temp_fd)
+                except OSError:
+                    pass
+            if temp_path and Path(temp_path).exists():
+                try:
+                    Path(temp_path).unlink()
+                except OSError:
+                    pass
+            raise e
+    
+    def _cleanup_image_resources(self) -> None:
+        """Clean up PIL image resources"""
+        try:
+            # Clear any existing image reference
+            if hasattr(self, 'img_label') and hasattr(self.img_label, 'image'):
+                self.img_label.image = None
+                self.img_label.configure(image='')
+        except Exception as e:
+            logger.warning(f"Error cleaning up image resources: {e}")
+    
+    def cleanup(self) -> None:
+        """Clean up all resources before shutdown"""
+        try:
+            logger.info("Starting application cleanup...")
+            
+            # Clear image cache and resources
+            self._cache_clear()
+            self._cleanup_image_resources()
+            
+            # Clean up model resources
+            if hasattr(self, 'model_manager') and self.model_manager:
+                self.model_manager.unload_model()
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            logger.info("Application cleanup completed")
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+    
+    def _on_closing(self) -> None:
+        """Handle application close event"""
+        try:
+            logger.info("Application closing...")
+            self.cleanup()
+            self.root.quit()
+            self.root.destroy()
+        except Exception as e:
+            logger.error(f"Error during application close: {e}")
+            # Force close
+            import sys
+            sys.exit(1)
 
 def main():
     parser = argparse.ArgumentParser(description='AI Training Dataset Preparation Tool')
