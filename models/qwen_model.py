@@ -78,6 +78,148 @@ class QwenModel(BaseVisionModel):
         self.tokenizer = None 
         super().__init__()
 
+
+class QwenCaptioner(BaseVisionModel):
+    """Qwen2.5-VL-7B-Captioner-Relaxed model implementation optimized for detailed captions."""
+    
+    REQUIRED_PACKAGES = {
+        'transformers': 'transformers (latest from git)',
+        'torch': 'torch',
+        'PIL': 'Pillow',
+        'qwen_vl_utils': 'qwen-vl-utils[decord]==0.0.8',
+        'accelerate': 'accelerate',
+        'bitsandbytes': 'bitsandbytes (for quantization)',
+        'flash_attn': 'flash-attn (optional, for performance, install with --no-build-isolation)'
+    }
+
+    def __init__(self, model_path: str = None, use_quantization: str = None):
+        self.model_path = model_path or "Ertugrul/Qwen2.5-VL-7B-Captioner-Relaxed"
+        self.use_quantization = use_quantization or "8bit"  # Default to 8-bit for 23.5GB VRAM
+        logger.info(f"Initializing QwenCaptioner with model: {self.model_path}, quantization: {self.use_quantization}")
+        
+        self._check_dependencies()
+        self.tokenizer = None
+        super().__init__()
+
+    def load(self):
+        """Load the model and return self for method chaining."""
+        if not hasattr(self, 'model') or self.model is None:
+            self._setup_model()
+        return self
+
+    def _setup_model(self) -> None:
+        """Override to use captioner-specific setup method."""
+        self._setup_model_captioner()
+
+    def caption_image(self, image_path: str, quality: str = "detailed") -> str:
+        """Caption a single image with the captioner model."""
+        description, caption = self.analyze_image(image_path, quality)
+        return caption if caption else description
+
+    def caption_batch(self, image_paths: List[str], quality: str = "detailed") -> List[str]:
+        """Caption multiple images in batch."""
+        results = self.analyze_images_batch(image_paths, quality)
+        return [caption if caption else description for description, caption in results]
+
+    def get_instruction_for_quality_captioner(self, quality: str) -> str:
+        """Get captioner-specific instructions optimized for the 7B Captioner model."""
+        if quality == "standard":
+            return "Describe this image concisely."
+        elif quality == "detailed":
+            return "Generate a comprehensive, detailed caption for this image. Include objects, people, setting, colors, mood, and composition details."
+        elif quality == "creative":
+            return "Create an artistic, evocative description of this image that captures both literal elements and emotional atmosphere."
+        return "Caption this image."
+
+    def get_generation_params_captioner(self, quality: str) -> dict:
+        """Get captioner-specific generation parameters optimized for the 7B model."""
+        if quality == "standard":
+            return {
+                "max_new_tokens": 100,
+                "temperature": 0.7,
+                "top_p": 0.9,
+                "do_sample": True,
+                "repetition_penalty": 1.1
+            }
+        elif quality == "detailed":
+            return {
+                "max_new_tokens": 300,
+                "temperature": 0.6,
+                "top_p": 0.85,
+                "repetition_penalty": 1.15,
+                "do_sample": True,
+                "num_beams": 3
+            }
+        elif quality == "creative":
+            return {
+                "max_new_tokens": 200,
+                "temperature": 0.8,
+                "top_p": 0.95,
+                "repetition_penalty": 1.1,
+                "do_sample": True,
+                "top_k": 50
+            }
+        return {"max_new_tokens": 100, "temperature": 0.7, "top_p": 0.9, "do_sample": True}
+
+    def analyze_image(self, image_path: str, quality: str = "detailed") -> Tuple[str, Optional[str]]:
+        """Override analyze_image to use captioner-specific methods."""
+        if not os.path.exists(image_path):
+            logger.error(f"Image file not found: {image_path}")
+            return "Error: Image file not found.", None
+        
+        try:
+            pil_image = Image.open(image_path)
+            if pil_image.mode != 'RGB':
+                pil_image = pil_image.convert('RGB')
+        except Exception as e:
+            logger.error(f"Error loading image {image_path}: {str(e)}")
+            return "Error: Failed to load or process image.", None
+
+        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, self.tokenizer, _QWEN_CLASS_AVAILABLE, process_vision_info_fn]):
+            logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
+            return self._analyze_with_clip(pil_image, quality)
+
+        # Use captioner-specific instruction
+        instruction = self.get_instruction_for_quality_captioner(quality)
+        
+        messages = [
+            {"role": "user", "content": [{"type": "image", "image": pil_image}, {"type": "text", "text": instruction}]}
+        ]
+
+        try:
+            text_for_template = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            image_inputs_processed, video_inputs_processed = process_vision_info_fn(messages)
+            
+            inputs = self.processor(
+                text=[text_for_template],
+                images=image_inputs_processed,
+                videos=video_inputs_processed,
+                padding=True,
+                return_tensors="pt",
+            ).to(self.device)
+
+            # Use captioner-specific generation parameters
+            generation_params = self.get_generation_params_captioner(quality)
+            
+            with torch.inference_mode():
+                generated_ids = self.model.generate(**inputs, **generation_params)
+            
+            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs["input_ids"], generated_ids)]
+            caption = self.processor.batch_decode(
+                generated_ids_trimmed, 
+                skip_special_tokens=True, 
+                clean_up_tokenization_spaces=True
+            )[0]
+            caption = self.clean_output(caption)
+            
+            model_name = "Qwen2.5-VL-7B-Captioner-Relaxed"
+            description = f"Description: {caption}\n\nGenerated by: {model_name}"
+            return description, caption
+
+        except Exception as e:
+            logger.error(f"Error generating caption with QwenCaptioner: {str(e)}")
+            return self._analyze_with_clip(pil_image, quality)
+
     @classmethod
     def _check_dependencies(cls) -> None:
         missing_packages = []
@@ -187,6 +329,76 @@ class QwenModel(BaseVisionModel):
         except Exception as e:
             logger.error(f"Failed to initialize Qwen model: {str(e)}")
             self._load_clip_as_fallback(reason=f"Qwen (non-AWQ) load failed: {e}")
+
+    def _setup_model_captioner(self) -> None:
+        """Setup method specifically for QwenCaptioner with quantization support."""
+        self._using_fallback = False
+        try:
+            if not _QWEN_CLASS_AVAILABLE or Qwen2_5_VLForConditionalGeneration is None:
+                logger.error("Qwen2_5_VLForConditionalGeneration class not available. Falling back.")
+                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found.")
+                return
+
+            if process_vision_info_fn is None:
+                logger.error("process_vision_info from qwen_vl_utils not available. Falling back.")
+                self._load_clip_as_fallback(reason="process_vision_info_fn not available.")
+                return
+            
+            logger.info(f"Loading Qwen2.5-VL-7B-Captioner-Relaxed model: {self.model_path}")
+            
+            model_kwargs: Dict[str, Any] = {
+                "torch_dtype": self.torch_dtype,
+                "trust_remote_code": True
+            }
+            
+            # Apply quantization if specified
+            if self.use_quantization == "4bit":
+                from transformers import BitsAndBytesConfig
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.float16,
+                    bnb_4bit_use_double_quant=True
+                )
+                model_kwargs["quantization_config"] = bnb_config
+                logger.info("Using 4-bit quantization")
+            elif self.use_quantization == "8bit":
+                from transformers import BitsAndBytesConfig
+                bnb_config = BitsAndBytesConfig(load_in_8bit=True)
+                model_kwargs["quantization_config"] = bnb_config
+                logger.info("Using 8-bit quantization")
+            
+            if self.device.startswith('cuda'):
+                model_kwargs["device_map"] = "auto"
+                logger.info("Setting device_map to 'auto' for CUDA with quantization support.")
+            elif self.device in ["cpu", "mps"]:
+                model_kwargs["device_map"] = self.device
+                logger.info(f"Setting device_map to '{self.device}'.")
+            else:
+                model_kwargs["device_map"] = "auto"
+                logger.info("Setting device_map to 'auto'.")
+
+            # Flash Attention for performance
+            if self.device.startswith('cuda') and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
+                try:
+                    import flash_attn 
+                    logger.info("Attempting to enable Flash Attention 2 for QwenCaptioner.")
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                except ImportError:
+                    logger.warning("flash_attn library not found. Flash Attention 2 cannot be enabled.")
+                except Exception as e:
+                    logger.warning(f"Could not enable Flash Attention 2: {e}. Proceeding without it.")
+            
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
+            logger.info(f"Successfully loaded QwenCaptioner model: {self.model_path} with kwargs: {model_kwargs}")
+            
+            self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+            logger.info(f"Successfully loaded QwenCaptioner processor and tokenizer for {self.model_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize QwenCaptioner model: {str(e)}")
+            self._load_clip_as_fallback(reason=f"QwenCaptioner load failed: {e}")
 
     def get_instruction_for_quality(self, quality: str) -> str:
         """Get appropriate instruction based on quality setting"""

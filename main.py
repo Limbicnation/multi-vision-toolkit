@@ -221,6 +221,15 @@ except Exception as e:
     except:
         QwenModel = None
 
+# Import QwenCaptioner
+QwenCaptioner = None
+try:
+    from models.qwen_model import QwenCaptioner
+    logger.info("Successfully imported QwenCaptioner")
+except Exception as e:
+    logger.error(f"Failed to load QwenCaptioner: {str(e)}")
+    QwenCaptioner = None
+
 @dataclass
 class ImageAnalysisResult:
     """Data class to store image analysis results"""
@@ -404,26 +413,35 @@ class ModelManager:
                             # Show downloading notification to the user
                             messagebox.showinfo(
                                 "Model Download",
-                                "The Qwen2.5-VL model will be downloaded if not available locally.\n\n"
+                                "The Qwen2.5-VL-3B-Instruct model will be downloaded if not available locally.\n\n"
                                 "This may take a few minutes on the first run. Please be patient."
                             )
                             model = DirectQwenModel()
                             
-                            # If successful, cache the class for future use
-                            globals()['QwenModel'] = DirectQwenModel
-                            self.models[model_name] = model
-                            return model
-                        except Exception as last_error:
-                            logger.error(f"Final import attempt failed: {str(last_error)}")
-                            raise ImportError(f"QwenModel is not available: {str(last_error)}")
+                        except ImportError as qwen_error:
+                            logger.error(f"QwenModel import failed: {str(qwen_error)}")
+                            raise ImportError(f"QwenModel is not available: {str(qwen_error)}")
+                    else:
+                        # Show downloading notification to the user
+                        messagebox.showinfo(
+                            "Model Download",
+                            "The Qwen2.5-VL-3B-Instruct model will be downloaded if not available locally.\n\n"
+                            "This may take a few minutes on the first run. Please be patient."
+                        )
+                        model = QwenModel()
+                    
+                elif model_name.lower() == "qwen-captioner":
+                    logger.info(f"QwenCaptioner class available: {QwenCaptioner is not None}")
+                    if QwenCaptioner is None:
+                        raise ImportError("QwenCaptioner is not available")
                     
                     # Show downloading notification to the user
                     messagebox.showinfo(
                         "Model Download",
-                        "The Qwen2.5-VL model will be downloaded if not available locally.\n\n"
-                        "This may take a few minutes on the first run. Please be patient."
+                        "The Qwen2.5-VL-7B-Captioner-Relaxed model will be downloaded if not available locally.\n\n"
+                        "This is a larger model (~13GB) and will take longer to download. Please be patient."
                     )
-                    model = QwenModel()
+                    model = QwenCaptioner()
                     
                 else:
                     raise ValueError(f"Unsupported model: {model_name}")
@@ -472,13 +490,28 @@ class ModelManager:
                         "  pip install qwen-vl-utils[decord]==0.0.8\n\n"
                         f"Error: {str(model_error)}"
                     )
+                elif model_name.lower() == "qwen-captioner":
+                    error_message = (
+                        "Failed to load or download Qwen2.5-VL-7B-Captioner-Relaxed model.\n\n"
+                        "This could be due to:\n"
+                        "1. Network connectivity issues\n"
+                        "2. Insufficient GPU memory (requires ~13GB)\n"
+                        "3. Missing required packages\n\n"
+                        "Solutions:\n"
+                        "- Check your internet connection\n"
+                        "- Ensure you have enough GPU memory or try 4-bit quantization\n"
+                        "- Try installing with:\n"
+                        "  pip install --upgrade transformers accelerate bitsandbytes\n"
+                        "  pip install qwen-vl-utils[decord]==0.0.8\n\n"
+                        f"Error: {str(model_error)}"
+                    )
                 else:
                     error_message = f"Unsupported model: {model_name}"
                 
                 messagebox.showerror("Model Error", error_message)
                 
                 # Ask if user wants to try another model
-                fallback_options = [m for m in ["florence2", "qwen", "janus"] if m != model_name.lower()]
+                fallback_options = [m for m in ["florence2", "qwen", "janus", "qwen-captioner"] if m != model_name.lower()]
                 if fallback_options:
                     fallback_message = f"Would you like to try the {fallback_options[0]} model instead?"
                     if messagebox.askyesno("Try Alternative Model", fallback_message):
@@ -693,7 +726,7 @@ class ReviewGUI:
         model_combo = ttk.Combobox(
             controls_frame, 
             textvariable=self.model_var,
-            values=["florence2", "janus", "qwen"],
+            values=["florence2", "janus", "qwen", "qwen-captioner"],
             state="readonly",
             width=10
         )
