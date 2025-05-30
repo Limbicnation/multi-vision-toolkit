@@ -87,6 +87,16 @@ def load_environment_from_dotenv():
         logger.warning(f"Error loading .env file: {str(e)}")
         return False
 
+def setup_cuda_memory_config():
+    """Setup CUDA memory configuration for better memory management"""
+    try:
+        # Set CUDA memory allocation configuration to reduce fragmentation
+        if not os.environ.get("PYTORCH_CUDA_ALLOC_CONF"):
+            os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+            logger.info("Set PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True for better memory management")
+    except Exception as e:
+        logger.warning(f"Failed to set CUDA memory configuration: {e}")
+
 def setup_cache_directory():
     """Setup a persistent cache directory for models"""
     try:
@@ -220,6 +230,15 @@ except Exception as e:
         logger.warning("Using dummy QwenModel as last resort")
     except:
         QwenModel = None
+
+# Import QwenCaptioner
+QwenCaptioner = None
+try:
+    from models.qwen_model import QwenCaptioner
+    logger.info("Successfully imported QwenCaptioner")
+except Exception as e:
+    logger.error(f"Failed to load QwenCaptioner: {str(e)}")
+    QwenCaptioner = None
 
 @dataclass
 class ImageAnalysisResult:
@@ -355,6 +374,57 @@ class ModelManager:
         
         # Check if models are available locally
         self.check_model_cache()
+
+    def unload_model(self, model_name: str = None) -> None:
+        """Unload a specific model or current model to free memory"""
+        import gc
+        
+        if model_name is None:
+            model_name = self._current_model_name
+            
+        if model_name and model_name in self.models:
+            logger.info(f"Unloading model: {model_name}")
+            
+            # Get the model object
+            model = self.models[model_name]
+            
+            # Clean up model attributes
+            if hasattr(model, 'model') and model.model is not None:
+                if hasattr(model.model, 'cpu'):
+                    model.model.cpu()
+                del model.model
+                model.model = None
+                
+            if hasattr(model, 'processor') and model.processor is not None:
+                del model.processor
+                model.processor = None
+                
+            if hasattr(model, 'tokenizer') and model.tokenizer is not None:
+                del model.tokenizer
+                model.tokenizer = None
+            
+            # Remove from cache
+            del self.models[model_name]
+            
+            # Clear current model if it was the one unloaded
+            if model_name == self._current_model_name:
+                self._current_model = None
+                self._current_model_name = None
+            
+            # Force garbage collection and clear CUDA cache
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                
+            logger.info(f"Successfully unloaded model: {model_name}")
+
+    def clear_all_models(self) -> None:
+        """Unload all cached models to free memory"""
+        model_names = list(self.models.keys())
+        for model_name in model_names:
+            self.unload_model(model_name)
+        logger.info("All models unloaded")
         
     def initialize_model(self, model_name: str) -> object:
         """Initialize a model with error handling, caching, and auto-download support"""
@@ -380,50 +450,19 @@ class ModelManager:
                     )
                     model = Florence2Model()
                     
-                elif model_name.lower() == "janus":
-                    logger.info(f"JanusModel class available: {JanusModel is not None}")
-                    if JanusModel is None:
-                        raise ImportError("JanusModel is not available")
+                elif model_name.lower() == "qwen-captioner":
+                    logger.info(f"QwenCaptioner class available: {QwenCaptioner is not None}")
+                    if QwenCaptioner is None:
+                        raise ImportError("QwenCaptioner is not available")
                     
                     # Show downloading notification to the user
                     messagebox.showinfo(
                         "Model Download",
-                        "The Janus model will be downloaded if not available locally.\n\n"
-                        "This may take a few minutes on the first run. Please be patient."
+                        "The Qwen2.5-VL-7B-Captioner-Relaxed model will be downloaded if not available locally.\n\n"
+                        "This is a larger model (~13GB) and will take longer to download. Please be patient.\n\n"
+                        "The model will automatically use 4-bit quantization for memory efficiency."
                     )
-                    model = JanusModel()
-                    
-                elif model_name.lower() == "qwen":
-                    logger.info(f"QwenModel class available: {QwenModel is not None}")
-                    if QwenModel is None:
-                        # Last attempt to import QwenModel directly here
-                        try:
-                            logger.info("Last attempt to import QwenModel...")
-                            from models.qwen_model import QwenModel as DirectQwenModel
-                            
-                            # Show downloading notification to the user
-                            messagebox.showinfo(
-                                "Model Download",
-                                "The Qwen2.5-VL model will be downloaded if not available locally.\n\n"
-                                "This may take a few minutes on the first run. Please be patient."
-                            )
-                            model = DirectQwenModel()
-                            
-                            # If successful, cache the class for future use
-                            globals()['QwenModel'] = DirectQwenModel
-                            self.models[model_name] = model
-                            return model
-                        except Exception as last_error:
-                            logger.error(f"Final import attempt failed: {str(last_error)}")
-                            raise ImportError(f"QwenModel is not available: {str(last_error)}")
-                    
-                    # Show downloading notification to the user
-                    messagebox.showinfo(
-                        "Model Download",
-                        "The Qwen2.5-VL model will be downloaded if not available locally.\n\n"
-                        "This may take a few minutes on the first run. Please be patient."
-                    )
-                    model = QwenModel()
+                    model = QwenCaptioner()
                     
                 else:
                     raise ValueError(f"Unsupported model: {model_name}")
@@ -472,13 +511,28 @@ class ModelManager:
                         "  pip install qwen-vl-utils[decord]==0.0.8\n\n"
                         f"Error: {str(model_error)}"
                     )
+                elif model_name.lower() == "qwen-captioner":
+                    error_message = (
+                        "Failed to load or download Qwen2.5-VL-7B-Captioner-Relaxed model.\n\n"
+                        "This could be due to:\n"
+                        "1. Network connectivity issues\n"
+                        "2. Insufficient GPU memory (requires ~13GB)\n"
+                        "3. Missing required packages\n\n"
+                        "Solutions:\n"
+                        "- Check your internet connection\n"
+                        "- Ensure you have enough GPU memory or try 4-bit quantization\n"
+                        "- Try installing with:\n"
+                        "  pip install --upgrade transformers accelerate bitsandbytes\n"
+                        "  pip install qwen-vl-utils[decord]==0.0.8\n\n"
+                        f"Error: {str(model_error)}"
+                    )
                 else:
                     error_message = f"Unsupported model: {model_name}"
                 
                 messagebox.showerror("Model Error", error_message)
                 
                 # Ask if user wants to try another model
-                fallback_options = [m for m in ["florence2", "qwen", "janus"] if m != model_name.lower()]
+                fallback_options = [m for m in ["florence2", "qwen-captioner"] if m != model_name.lower()]
                 if fallback_options:
                     fallback_message = f"Would you like to try the {fallback_options[0]} model instead?"
                     if messagebox.askyesno("Try Alternative Model", fallback_message):
@@ -523,6 +577,11 @@ class ModelManager:
     def get_model(self, model_name: str) -> object:
         """Get a model, initializing if necessary"""
         if self._current_model_name != model_name:
+            # Unload previous model to free memory
+            if self._current_model_name is not None:
+                logger.info(f"Switching from {self._current_model_name} to {model_name}, unloading previous model")
+                self.unload_model(self._current_model_name)
+                
             self._current_model = self.initialize_model(model_name)
             self._current_model_name = model_name
         return self._current_model
@@ -693,7 +752,7 @@ class ReviewGUI:
         model_combo = ttk.Combobox(
             controls_frame, 
             textvariable=self.model_var,
-            values=["florence2", "janus", "qwen"],
+            values=["florence2", "qwen-captioner"],
             state="readonly",
             width=10
         )
@@ -1892,10 +1951,13 @@ def main():
     parser.add_argument('--approved_dir', default='approved', help='Approved directory')
     parser.add_argument('--rejected_dir', default='rejected', help='Rejected directory')
     parser.add_argument('--trigger_word', help='Optional trigger word to add to captions')
-    parser.add_argument('--model', default='florence2', choices=['florence2', 'janus', 'qwen'],
+    parser.add_argument('--model', default='florence2', choices=['florence2', 'qwen-captioner'],
                       help='Vision model to use (default: florence2)')
     
     try:
+        # Setup CUDA memory configuration early
+        setup_cuda_memory_config()
+        
         args = parser.parse_args()
         selected_model = args.model
         # if selected_model.lower() == 'florence2':

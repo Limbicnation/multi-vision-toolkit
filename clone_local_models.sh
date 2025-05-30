@@ -96,10 +96,10 @@ git lfs install
 
 # Create models directory if it doesn't exist
 print_status "Creating directories..."
-mkdir -p models/weights
+mkdir -p local_repo/models
 
 # Set variables
-MODEL_DIR="models/weights"
+MODEL_DIR="local_repo/models"
 QWEN_MODEL="Qwen/Qwen2.5-VL-3B-Instruct"
 QWEN_LOCAL_DIR="$MODEL_DIR/Qwen2.5-VL-3B-Instruct"
 

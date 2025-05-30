@@ -1,5 +1,5 @@
 # Multi-Vision Toolkit 🖼️ 🤖
- A toolkit for local deployment of state-of-the-art vision models (Florence-2, BLIP, and Qwen2.5-VL), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
+ A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen2.5-VL-7B-Captioner-Relaxed), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 <p align="center">
   <img src="images/Vision-Toolkit_DarkMode_2025-03-05.jpg" width="49%" alt="Vision Toolkit Dark Mode">
@@ -8,8 +8,8 @@
 
 ## 🚀 Key Features
 
-- **Multiple Vision Models**: Florence-2 (advanced vision tasks), BLIP (high-quality image captioning), and Qwen2.5-VL (model loading, specific analysis capabilities currently under review)
-- **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and BLIP)
+- **Multiple Vision Models**: Florence-2 (advanced vision tasks), Janus-Pro-1B (advanced multimodal understanding), Qwen2.5-VL (high-quality captioning and analysis), and Qwen2.5-VL-7B-Captioner-Relaxed (specialized detailed captioning)
+- **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and Janus-Pro-1B)
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
 - **Quality Controls**: Generate captions in standard, detailed, or creative modes
@@ -78,7 +78,7 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 
 ## 💻 GUI Features
 
-- **Model Selection**: Switch between Florence-2, BLIP/Janus, and Qwen2.5-VL
+- **Model Selection**: Switch between Florence-2, Janus-Pro-1B, and Qwen2.5-VL
 - **Image Management**: Preview, approve (A key), or reject (R key)
 - **Analysis Display**: View captioning, object detection, and OCR results
 - **Metadata Tracking**: Auto-generated JSON and text files
@@ -101,10 +101,10 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 |-------|-------------|-------------------|----------|
 | Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
 | Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
-| BLIP/Janus | High-quality image captioning | 4GB+ | Dummy model |
+| Janus-Pro-1B | Advanced multimodal understanding and captioning | 4GB+ | Dummy model |
 | Qwen2.5-VL-3B-Instruct | High-quality multimodal captioning | 8GB+ (approx.) | CLIP model |
 
-Each model has a fallback mechanism if the primary model fails to load. The Qwen model (non-AWQ) will fall back to a CLIP-based implementation if it encounters issues.
+Each model has a fallback mechanism if the primary model fails to load. The Qwen model (non-AWQ) will fall back to a CLIP-based implementation if it encounters issues. The Janus-Pro-1B model supports efficient quantization for lower memory requirements.
 
 ## 🔧 Troubleshooting
 

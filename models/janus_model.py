@@ -2,7 +2,7 @@
 from models.base_model import BaseVisionModel
 import logging
 import torch
-from transformers import AutoModelForCausalLM, AutoProcessor, BlipProcessor, BlipForConditionalGeneration
+from transformers import AutoModelForCausalLM, AutoProcessor
 from PIL import Image
 from typing import Tuple, Optional, List
 import os
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 class JanusModel(BaseVisionModel):
     """
-    Vision model implementation using BLIP model for image understanding.
+    Vision model implementation using DeepSeek Janus-Pro-1B model for image understanding.
     This is a publicly available model that doesn't require authentication.
     """
     
@@ -25,12 +25,12 @@ class JanusModel(BaseVisionModel):
         """
         # Try local path first, then fall back to HuggingFace
         if model_path is None:
-            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "blip-image-captioning-base")
+            local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "deepseek-ai-Janus-Pro-1B")
             if os.path.exists(local_path):
                 self.model_path = local_path
                 logger.info(f"Using local model: {self.model_path}")
             else:
-                self.model_path = "Salesforce/blip-image-captioning-base"
+                self.model_path = "deepseek-ai/Janus-Pro-1B"
                 logger.info(f"Using remote model: {self.model_path}")
         else:
             self.model_path = model_path
@@ -39,12 +39,12 @@ class JanusModel(BaseVisionModel):
         super().__init__()
 
     def _setup_model(self) -> None:
-        """Set up the BLIP model."""
+        """Set up the DeepSeek Janus-Pro-1B model."""
         try:
             logger.info(f"Loading model from {self.model_path}...")
             
             try:
-                self.processor = BlipProcessor.from_pretrained(
+                self.processor = AutoProcessor.from_pretrained(
                     self.model_path,
                     trust_remote_code=True,  # Add trust_remote_code
                     local_files_only=False  # Allow downloading if not available locally
@@ -54,13 +54,23 @@ class JanusModel(BaseVisionModel):
                 raise RuntimeError("Processor initialization failed") from e
                 
             try:
-                self.model = BlipForConditionalGeneration.from_pretrained(
+                # Get optimal settings for device and memory constraints
+                settings = self.get_low_memory_optimization_settings()
+                
+                # For optimal performance, use cuda or float16 when available
+                self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_path,
                     torch_dtype=self.torch_dtype,
                     trust_remote_code=True,  # Add trust_remote_code
                     revision="main",         # Explicitly use main branch
-                    local_files_only=False   # Allow downloading if not available locally
-                ).to(self.device)
+                    local_files_only=False,   # Allow downloading if not available locally
+                    device_map="auto" if self.device.startswith("cuda") else None
+                )
+                
+                # If device_map="auto" is not used, manually move model to device
+                if not self.device.startswith("cuda") or "device_map" not in settings:
+                    self.model = self.model.to(self.device)
+                    
             except Exception as e:
                 logger.error(f"Failed to load model: {str(e)}")
                 raise RuntimeError("Model initialization failed") from e
@@ -71,7 +81,7 @@ class JanusModel(BaseVisionModel):
 
     def get_prompt_for_quality(self, quality: str = "standard") -> str:
         """
-        Get the appropriate prompt text for Janus/BLIP model based on quality.
+        Get the appropriate prompt text for Janus-Pro-1B model based on quality.
         
         Args:
             quality: Quality level - "standard", "detailed", or "creative"
@@ -84,11 +94,11 @@ class JanusModel(BaseVisionModel):
         elif quality == "creative":
             return "Create an imaginative and evocative description of this image. Use vivid language, metaphors, and creative interpretations."
         else:  # standard
-            return "Describe this image in a concise way."
+            return "Generate a concise, factual caption for this image."
     
     def get_generation_params_for_quality(self, quality: str = "standard") -> dict:
         """
-        Get the appropriate generation parameters for Janus/BLIP model based on quality.
+        Get the appropriate generation parameters for Janus-Pro-1B model based on quality.
         
         Args:
             quality: Quality level - "standard", "detailed", or "creative"
@@ -98,42 +108,36 @@ class JanusModel(BaseVisionModel):
         """
         if quality == "detailed":
             return {
-                "max_length": 100,       # Longer for detailed descriptions
-                "min_length": 60,        # Ensure a minimum length
-                "num_beams": 7,          # More beams for higher quality
-                "temperature": 0.65,     # Lower temperature for factual output
-                "top_p": 0.92,           # Slightly restrictive filtering
-                "length_penalty": 1.5,   # Encourage longer outputs
+                "max_new_tokens": 150,   # Longer for detailed descriptions
+                "num_beams": 5,          # More beams for higher quality
+                "temperature": 0.7,      # Lower temperature for factual output
+                "top_p": 0.95,           # Slightly restrictive filtering
                 "do_sample": False,      # Deterministic for factual details
                 "repetition_penalty": 1.2 # Avoid repetition
             }
         elif quality == "creative":
             return {
-                "max_length": 90,        # Medium length
-                "min_length": 30,        # Lower minimum for more flexibility
+                "max_new_tokens": 100,   # Medium length
                 "num_beams": 5,          # Fewer beams for more variety
-                "temperature": 1.1,      # Higher temperature for more creativity
-                "top_p": 0.97,           # Less restrictive top_p
-                "top_k": 60,             # Add top_k for diversity
-                "length_penalty": 0.8,   # Shorter outputs acceptable
+                "temperature": 0.9,      # Higher temperature for more creativity
+                "top_p": 0.95,           # Less restrictive top_p
+                "top_k": 50,             # Add top_k for diversity
                 "do_sample": True,       # Enable sampling for creativity
                 "repetition_penalty": 1.0 # No repetition penalty to allow stylistic repetition
             }
         else:  # standard
             return {
-                "max_length": 50,        # Short, concise outputs
-                "min_length": 10,        # Very low minimum
+                "max_new_tokens": 50,    # Short, concise outputs
                 "num_beams": 5,          # Standard beam count
                 "temperature": 0.7,      # Standard temperature
-                "top_p": 0.9,            # Standard top_p
-                "length_penalty": 1.0,   # Neutral length penalty
-                "do_sample": True,       # Some randomness
+                "top_p": 0.95,           # Standard top_p
+                "do_sample": False,      # More deterministic for standard description
                 "repetition_penalty": 1.1 # Light repetition penalty
             }
     
     def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
         """
-        Analyze an image using the BLIP model with quality-specific settings.
+        Analyze an image using the Janus-Pro-1B model with quality-specific settings.
         
         Args:
             image_path: Path to the image file
@@ -173,13 +177,13 @@ class JanusModel(BaseVisionModel):
                 
                 # Generate caption
                 with torch.inference_mode():
-                    generated_ids = self.model.generate(
-                        pixel_values=inputs.pixel_values,
+                    outputs = self.model.generate(
+                        **inputs,
                         **generation_params
                     )
                 
                 # Decode caption
-                caption = self.processor.decode(generated_ids[0], skip_special_tokens=True)
+                caption = self.processor.decode(outputs[0], skip_special_tokens=True)
                 caption = self.clean_output(caption)
                 
                 # Format description based on quality
@@ -196,7 +200,7 @@ class JanusModel(BaseVisionModel):
                 else:  # standard
                     description = f"Description: {caption}"
                 
-                description += f"\n\nGenerated using Janus/BLIP ({quality} mode)"
+                description += f"\n\nGenerated using Janus-Pro-1B ({quality} mode)"
                 
                 return description, caption
                 
@@ -283,7 +287,7 @@ class JanusModel(BaseVisionModel):
 
     def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
         """
-        Analyze a batch of images using the BLIP model by processing them individually.
+        Analyze a batch of images using the Janus-Pro-1B model by processing them individually.
         
         Args:
             image_paths (List[str]): List of paths to image files

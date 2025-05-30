@@ -101,8 +101,8 @@ git lfs install
 
 # Create models directory if it doesn't exist
 print_status "Creating directories..."
-mkdir -p models/weights
-cd models/weights
+mkdir -p local_repo/models
+cd local_repo/models
 
 # Helper function to clone a model repository
 clone_model() {
@@ -195,15 +195,15 @@ if [ -z "$HF_TOKEN" ]; then
     fi
 fi
 
-# Clone models
+# Clone models (removed deprecated qwen/janus models, kept QwenCaptioner)
 clone_with_retry "Florence-2-base" "microsoft/Florence-2-base" "Florence-2-base"
 clone_with_retry "BLIP model" "Salesforce/blip-image-captioning-base" "blip-image-captioning-base"
-clone_with_retry "Qwen model" "Qwen/Qwen2.5-VL-3B-Instruct-AWQ" "Qwen2.5-VL-3B-Instruct-AWQ"
+clone_with_retry "QwenCaptioner model" "Ertugrul/Qwen2.5-VL-7B-Captioner-Relaxed" "Qwen2.5-VL-7B-Captioner-Relaxed"
 
 print_section "Summary"
 print_status "All models cloned successfully!"
 print_status "Model weights are in: $(pwd)"
 print_status "You may need to update the model paths in the code to point to these local repositories."
 
-# Return to original directory
+# Return to original directory  
 cd ../..
