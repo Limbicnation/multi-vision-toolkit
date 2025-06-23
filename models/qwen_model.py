@@ -84,13 +84,40 @@ class QwenModel(BaseVisionModel):
         """Setup the Qwen model."""
         super()._setup_model()
 
-    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
-        """Analyze a single image."""
-        return super().analyze_image(image_path, quality)
+    def _get_model_name(self) -> str:
+        """Get the model name for template system integration."""
+        return "qwen"
 
-    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
-        """Analyze multiple images in batch."""
-        return super().analyze_images_batch(image_paths, quality)
+    def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
+        """Analyze a single image with template support.
+        
+        Args:
+            image_path: Path to the image file
+            quality: Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use (e.g., "caption_detailed", "object_detection")
+            template_variables: Variables for template substitution
+            
+        Returns:
+            Tuple[str, Optional[str]]: (description, clean_caption)
+        """
+        return super().analyze_image(image_path, quality, template_name, template_variables)
+
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard",
+                            template_name: Optional[str] = None, 
+                            template_variables: Optional[Dict[str, Any]] = None) -> List[Tuple[str, Optional[str]]]:
+        """Analyze multiple images in batch with template support.
+        
+        Args:
+            image_paths: List of paths to image files
+            quality: Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use (e.g., "caption_detailed", "object_detection")
+            template_variables: Variables for template substitution
+            
+        Returns:
+            List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
+        """
+        return super().analyze_images_batch(image_paths, quality, template_name, template_variables)
 
     @classmethod
     def _check_dependencies(cls) -> None:
@@ -213,8 +240,27 @@ class QwenCaptioner(BaseVisionModel):
             }
         return {"max_new_tokens": 100, "temperature": 0.7, "top_p": 0.9, "do_sample": True}
 
-    def analyze_image(self, image_path: str, quality: str = "detailed") -> Tuple[str, Optional[str]]:
-        """Override analyze_image to use captioner-specific methods."""
+    def _get_model_name(self) -> str:
+        """Get the model name for template system integration."""
+        return "qwen"
+
+    def _get_legacy_prompt(self, quality: str) -> str:
+        """Get legacy prompt for backward compatibility."""
+        return self.get_instruction_for_quality_captioner(quality)
+
+    def analyze_image(self, image_path: str, quality: str = "detailed", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
+        """Override analyze_image to use captioner-specific methods with template support.
+        
+        Args:
+            image_path: Path to the image file
+            quality: Quality level - "standard", "detailed", or "creative" 
+            template_name: Specific template to use (e.g., "caption_detailed", "object_detection")
+            template_variables: Variables for template substitution
+            
+        Returns:
+            Tuple[str, Optional[str]]: (description, clean_caption)
+        """
         if not os.path.exists(image_path):
             logger.error(f"Image file not found: {image_path}")
             return "Error: Image file not found.", None
@@ -240,8 +286,13 @@ class QwenCaptioner(BaseVisionModel):
             logger.warning(f"Reason: _using_fallback={getattr(self, '_using_fallback', False)}, model={self.model is not None}, processor={self.processor is not None}, class_available={_QWEN_CLASS_AVAILABLE}")
             return self._analyze_with_clip(pil_image, quality)
 
-        # Use captioner-specific instruction
-        instruction = self.get_instruction_for_quality_captioner(quality)
+        # Determine instruction/prompt to use
+        if template_name is not None:
+            # Get prompt from template
+            instruction = self.get_prompt_from_template(quality, template_name, template_variables)
+        else:
+            # Use captioner-specific instruction for legacy mode
+            instruction = self.get_instruction_for_quality_captioner(quality)
         
         messages = [
             {
@@ -558,6 +609,10 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(f"Failed to load CLIP CPU fallback model: {str(fallback_error)}")
             raise RuntimeError(f"QwenCaptioner model setup failed, and CPU fallback CLIP model also failed to load: {fallback_error}") from fallback_error
 
+    def _get_legacy_prompt(self, quality: str) -> str:
+        """Get legacy prompt for backward compatibility."""
+        return self.get_instruction_for_quality(quality)
+
     def get_instruction_for_quality(self, quality: str) -> str:
         """Get appropriate instruction based on quality setting"""
         if quality == "standard":
@@ -598,7 +653,8 @@ class QwenCaptioner(BaseVisionModel):
         # Default to standard if unknown quality provided
         return {"max_new_tokens": 75, "temperature": 0.7, "top_p": 0.9, "do_sample": True}
 
-    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+    def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
         if not os.path.exists(image_path):
             logger.error(f"Image file not found: {image_path}")
             return "Error: Image file not found.", None
@@ -615,8 +671,13 @@ class QwenCaptioner(BaseVisionModel):
             logger.info("Using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             return self._analyze_with_clip(pil_image, quality)
 
-        # Get quality-specific instruction
-        instruction = self.get_instruction_for_quality(quality)
+        # Determine instruction/prompt to use
+        if template_name is not None:
+            # Get prompt from template
+            instruction = self.get_prompt_from_template(quality, template_name, template_variables)
+        else:
+            # Get quality-specific instruction for legacy mode
+            instruction = self.get_instruction_for_quality(quality)
         
         messages = [
             {
@@ -670,7 +731,9 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(f"Error generating caption with Qwen: {str(e)}")
             return self._analyze_with_clip(pil_image, quality)
 
-    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard",
+                            template_name: Optional[str] = None, 
+                            template_variables: Optional[Dict[str, Any]] = None) -> List[Tuple[str, Optional[str]]]:
         if not image_paths:
             return []
 
@@ -713,7 +776,13 @@ class QwenCaptioner(BaseVisionModel):
 
         for i, pil_image in enumerate(actual_pil_images):
             current_original_idx = original_indices_for_processing[i]
-            instruction = self.get_instruction_for_quality(quality)
+            # Determine instruction/prompt to use
+            if template_name is not None:
+                # Get prompt from template
+                instruction = self.get_prompt_from_template(quality, template_name, template_variables)
+            else:
+                # Get quality-specific instruction for legacy mode
+                instruction = self.get_instruction_for_quality(quality)
             current_messages = [
                 {
                     "role": "system",

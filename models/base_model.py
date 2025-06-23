@@ -2,8 +2,22 @@
 from abc import ABC, abstractmethod
 import torch
 import logging
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Dict, Any
 from PIL import Image
+import os
+import sys
+
+# Add templates directory to path for imports
+current_dir = os.path.dirname(os.path.abspath(__file__))
+parent_dir = os.path.dirname(current_dir)
+templates_dir = os.path.join(parent_dir, 'templates')
+sys.path.insert(0, templates_dir)
+
+try:
+    from template_manager import TemplateManager
+except ImportError:
+    # Fallback if template system is not available
+    TemplateManager = None
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +36,35 @@ class BaseVisionModel(ABC):
             
         logger.info(f"Using device: {self.device} with dtype: {self.torch_dtype}")
         
+        # Initialize template system
+        self._init_template_system()
+        
         # Setup model
         self._setup_model()
+    
+    def _init_template_system(self):
+        """Initialize the template system for this model."""
+        try:
+            if TemplateManager is not None:
+                self.template_manager = TemplateManager()
+                self.model_name = self._get_model_name()
+                logger.info(f"Template system initialized for model: {self.model_name}")
+            else:
+                self.template_manager = None
+                self.model_name = "unknown"
+                logger.warning("Template system not available - using fallback mode")
+        except Exception as e:
+            logger.error(f"Failed to initialize template system: {e}")
+            self.template_manager = None
+            self.model_name = "unknown"
+    
+    @abstractmethod
+    def _get_model_name(self) -> str:
+        """
+        Get the model name for template system integration.
+        Should return one of: 'florence2', 'janus', 'qwen', 'qwen_local'
+        """
+        raise NotImplementedError("Subclasses must implement _get_model_name")
         
     def _get_optimal_device(self, requested_device=None):
         """
@@ -196,13 +237,16 @@ class BaseVisionModel(ABC):
         pass
 
     @abstractmethod
-    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+    def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
         """
         Analyze an image using the model.
         
         Args:
             image_path (str): Path to the image file
             quality (str): Quality level - "standard", "detailed", or "creative"
+            template_name (str, optional): Specific template to use (e.g., "caption_detailed")
+            template_variables (Dict[str, Any], optional): Variables for template substitution
             
         Returns:
             Tuple[str, Optional[str]]: (description, clean_caption)
@@ -210,18 +254,83 @@ class BaseVisionModel(ABC):
         raise NotImplementedError("Subclasses must implement analyze_image")
 
     @abstractmethod
-    def analyze_images_batch(self, image_paths: list[str], quality: str = "standard") -> list[Tuple[str, Optional[str]]]:
+    def analyze_images_batch(self, image_paths: list[str], quality: str = "standard", 
+                            template_name: Optional[str] = None, 
+                            template_variables: Optional[Dict[str, Any]] = None) -> list[Tuple[str, Optional[str]]]:
         """
         Analyze a batch of images using the model.
         
         Args:
             image_paths (List[str]): List of paths to image files
             quality (str): Quality level - "standard", "detailed", or "creative"
+            template_name (str, optional): Specific template to use
+            template_variables (Dict[str, Any], optional): Variables for template substitution
             
         Returns:
             List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
         """
         raise NotImplementedError("Subclasses must implement analyze_images_batch")
+    
+    def get_prompt_from_template(self, quality: str = "standard", template_name: Optional[str] = None, 
+                                template_variables: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Get a prompt using the template system.
+        
+        Args:
+            quality: Quality level for default template selection
+            template_name: Specific template name to use
+            template_variables: Variables for template substitution
+            
+        Returns:
+            Rendered prompt string
+        """
+        if self.template_manager is None:
+            # Fallback to legacy quality-based prompts
+            return self._get_legacy_prompt(quality)
+        
+        # Use template system
+        if template_name is None:
+            template_name = f"caption_{quality}"
+        
+        # Prepare template variables
+        if template_variables is None:
+            template_variables = {}
+        
+        # Add quality mode to variables
+        template_variables.setdefault('quality_mode', quality)
+        
+        # Try to render template
+        prompt = self.template_manager.render_template(self.model_name, template_name, template_variables)
+        
+        if prompt is None:
+            logger.warning(f"Template '{template_name}' not found for model '{self.model_name}', using fallback")
+            return self._get_legacy_prompt(quality)
+        
+        return prompt
+    
+    def _get_legacy_prompt(self, quality: str) -> str:
+        """
+        Get legacy prompt for backward compatibility.
+        Subclasses should override this to provide model-specific legacy prompts.
+        """
+        if quality == "detailed":
+            return "Provide a detailed description of this image including objects, colors, and composition."
+        elif quality == "creative":
+            return "Create an artistic and evocative description of this image."
+        else:  # standard
+            return "Generate a concise caption for this image."
+    
+    def get_available_templates(self) -> Dict[str, str]:
+        """Get available templates for this model."""
+        if self.template_manager is None:
+            return {}
+        return self.template_manager.get_model_templates(self.model_name)
+    
+    def get_template_variables(self, template_name: str) -> list:
+        """Get variables used in a specific template."""
+        if self.template_manager is None:
+            return []
+        return self.template_manager.get_template_variables(self.model_name, template_name)
 
     def clean_output(self, text: str) -> str:
         """Clean model output by removing special tokens, non-printable characters, and formatting."""

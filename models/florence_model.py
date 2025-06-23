@@ -1,6 +1,6 @@
 # models/florence_model.py
 from models.base_model import BaseVisionModel
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
 import logging
 import torch
 import importlib
@@ -327,6 +327,9 @@ class Florence2Model(BaseVisionModel):
         
         logger.info("Florence-2 model and processor loaded successfully.")
 
+    def _get_model_name(self) -> str:
+        """Get the model name for template system integration."""
+        return "florence2"
 
     def get_task_prompt_for_quality(self, quality: str = "standard") -> str:
         """
@@ -388,18 +391,29 @@ class Florence2Model(BaseVisionModel):
                 "length_penalty": 1.0    # Neutral length penalty
             }
     
-    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+    def _get_legacy_prompt(self, quality: str) -> str:
+        """
+        Get legacy prompt for backward compatibility.
+        Florence-2 uses task tokens, so we return the appropriate token.
+        """
+        # Florence-2 always uses <CAPTION> for caption generation
+        return "<CAPTION>"
+    
+    def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
         """
         Analyze an image using the Florence-2 model with quality-specific settings.
         
         Args:
             image_path: Path to the image file
             quality: Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use (e.g., "caption_detailed", "object_detection")
+            template_variables: Variables for template substitution
             
         Returns:
             Tuple[str, Optional[str]]: (description, clean_caption)
         """
-        logger.info(f"Florence2Model using quality mode: '{quality}'")
+        logger.info(f"Florence2Model using quality mode: '{quality}', template: '{template_name}'")
         try:
             # Validate image path
             if not os.path.exists(image_path):
@@ -415,10 +429,42 @@ class Florence2Model(BaseVisionModel):
                 logger.error(f"Error loading image {image_path}: {str(e)}")
                 return "Error: Failed to load or process image.", None
 
-            # Generate caption based on quality setting
-            try:
-                # Get quality-specific task prompt and generation parameters
+            # Determine task type and prompt
+            task_type = "caption"  # default
+            task_prompt = None
+            
+            # Check if using template system
+            if template_name is not None:
+                # Get prompt from template
+                template_prompt = self.get_prompt_from_template(quality, template_name, template_variables)
+                
+                # Map template names to Florence-2 task tokens
+                florence_task_mapping = {
+                    "object_detection": "<OD>",
+                    "object_detection_detailed": "<DENSE_REGION_CAPTION>",
+                    "ocr": "<OCR_WITH_REGION>",
+                    "ocr_simple": "<OCR>",
+                    "region_caption": "<REGION_TO_CATEGORY>",
+                    "vqa": "<VQA>",
+                    "vqa_custom": "<VQA>",
+                    "more_detailed_caption": "<MORE_DETAILED_CAPTION>",
+                    "region_proposal": "<REGION_PROPOSAL>"
+                }
+                
+                if template_name in florence_task_mapping:
+                    task_prompt = florence_task_mapping[template_name]
+                    task_type = template_name
+                else:
+                    # For caption templates, use <CAPTION> task token
+                    task_prompt = "<CAPTION>"
+                    task_type = "caption"
+            else:
+                # Legacy mode - use quality-based prompts
                 task_prompt = self.get_task_prompt_for_quality(quality)
+                task_type = "caption"
+
+            # Generate caption based on task type
+            try:
                 generation_params = self.get_generation_params_for_quality(quality)
                 
                 # Caption generation
@@ -561,15 +607,22 @@ class Florence2Model(BaseVisionModel):
             logger.error(f"Error analyzing image with Florence-2: {str(e)}")
             return "Error: An unexpected error occurred.", None
 
-    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard", 
+                            template_name: Optional[str] = None, 
+                            template_variables: Optional[Dict[str, Any]] = None) -> List[Tuple[str, Optional[str]]]:
         """Analyze a batch of images using the Florence-2 model by processing them individually."""
         if not image_paths:
             return []
         
         results = []
         for image_path in image_paths:
-            # Call the existing single-image analysis method
-            description, clean_caption = self.analyze_image(image_path, quality=quality)
+            # Call the existing single-image analysis method with template support
+            description, clean_caption = self.analyze_image(
+                image_path, 
+                quality=quality, 
+                template_name=template_name, 
+                template_variables=template_variables
+            )
             results.append((description, clean_caption))
         return results
 

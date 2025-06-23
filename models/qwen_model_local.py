@@ -3,7 +3,7 @@ from models.qwen_model import QwenModel
 import logging
 import os
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple, List
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +49,41 @@ class QwenModelLocal(QwenModel):
             # After downloading, move files if needed
             self._ensure_model_locally_saved()
     
+    def _get_model_name(self) -> str:
+        """Get the model name for template system integration."""
+        return "qwen_local"
+    
+    def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
+        """Analyze a single image with template support.
+        
+        Args:
+            image_path: Path to the image file
+            quality: Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use (e.g., "caption_detailed", "object_detection")
+            template_variables: Variables for template substitution
+            
+        Returns:
+            Tuple[str, Optional[str]]: (description, clean_caption)
+        """
+        return super().analyze_image(image_path, quality, template_name, template_variables)
+    
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard",
+                            template_name: Optional[str] = None, 
+                            template_variables: Optional[Dict[str, Any]] = None) -> List[Tuple[str, Optional[str]]]:
+        """Analyze multiple images in batch with template support.
+        
+        Args:
+            image_paths: List of paths to image files
+            quality: Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use (e.g., "caption_detailed", "object_detection")
+            template_variables: Variables for template substitution
+            
+        Returns:
+            List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
+        """
+        return super().analyze_images_batch(image_paths, quality, template_name, template_variables)
+
     def _setup_environment(self):
         """Set environment variables to ensure models are saved locally and properly"""
         # Set cache directory to our local directory

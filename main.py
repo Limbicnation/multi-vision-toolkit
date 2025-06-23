@@ -11,6 +11,14 @@ from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
 import threading
 
+# Import template system
+try:
+    from templates.template_manager import TemplateManager
+    TEMPLATES_AVAILABLE = True
+except ImportError:
+    TEMPLATES_AVAILABLE = False
+    logging.warning("Template system not available - using legacy mode")
+
 # Apply encoding fix for Qwen model
 try:
     from fix_qwen_encoding import apply_encoding_fix
@@ -733,6 +741,16 @@ class ReviewGUI:
 
         self.dataset_prep = DatasetPreparator()
         
+        # Initialize template system
+        self.template_manager = None
+        if TEMPLATES_AVAILABLE:
+            try:
+                self.template_manager = TemplateManager()
+                logger.info("Template system initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize template system: {e}")
+                self.template_manager = None
+        
         # Create directories
         for dir_path in [self.review_dir, self.approved_dir, self.rejected_dir]:
             dir_path.mkdir(parents=True, exist_ok=True)
@@ -946,6 +964,36 @@ class ReviewGUI:
         )
         quality_combo.pack(side=tk.LEFT, padx=5)
         quality_combo.bind('<<ComboboxSelected>>', self._on_quality_change)
+        
+        # Template selection (if available)
+        if self.template_manager is not None:
+            template_frame = ttk.Frame(toolbar_frame)
+            template_frame.pack(side=tk.LEFT, padx=10)
+            
+            ttk.Label(template_frame, text="Template:").pack(side=tk.LEFT, padx=5)
+            self.template_var = tk.StringVar(value="default")
+            self.template_combo = ttk.Combobox(
+                template_frame,
+                textvariable=self.template_var,
+                state="readonly",
+                width=15
+            )
+            self.template_combo.pack(side=tk.LEFT, padx=5)
+            self.template_combo.bind('<<ComboboxSelected>>', self._on_template_change)
+            
+            # Template variables input
+            self.trigger_word_var = tk.StringVar(value=self.trigger_word or "")
+            ttk.Label(template_frame, text="Trigger:").pack(side=tk.LEFT, padx=5)
+            trigger_entry = ttk.Entry(
+                template_frame,
+                textvariable=self.trigger_word_var,
+                width=10
+            )
+            trigger_entry.pack(side=tk.LEFT, padx=5)
+            trigger_entry.bind('<KeyRelease>', self._on_trigger_word_change)
+            
+            # Update template options
+            self._update_template_options()
         
         # Export controls
         export_frame = ttk.Frame(toolbar_frame)
@@ -1173,6 +1221,10 @@ class ReviewGUI:
                                     # Re-enable controls
                                     self._set_controls_state(tk.NORMAL)
                                     
+                                    # Update template options for new model
+                                    if hasattr(self, 'template_manager') and self.template_manager is not None:
+                                        self._update_template_options()
+                                    
                                     if self.items:
                                         self.show_current()
                                     self.status_label.config(text=f"Switched to {new_model} model")
@@ -1254,6 +1306,56 @@ class ReviewGUI:
         except Exception as e:
             logger.error(f"Error in quality change handler: {str(e)}")
 
+    def _on_template_change(self, event):
+        """Handle template selection change"""
+        try:
+            new_template = self.template_var.get()
+            logger.info(f"Changed template to: {new_template}")
+            
+            # If there's an image loaded, offer to regenerate the caption
+            if self.items and new_template != "default":
+                if messagebox.askyesno(
+                    "Regenerate Caption",
+                    f"Would you like to regenerate the caption with the '{new_template}' template?"
+                ):
+                    self._regenerate_caption()
+        except Exception as e:
+            logger.error(f"Error in template change handler: {str(e)}")
+
+    def _on_trigger_word_change(self, event):
+        """Handle trigger word change"""
+        try:
+            self.trigger_word = self.trigger_word_var.get()
+            logger.info(f"Updated trigger word to: '{self.trigger_word}'")
+        except Exception as e:
+            logger.error(f"Error updating trigger word: {str(e)}")
+
+    def _update_template_options(self):
+        """Update template dropdown options based on current model"""
+        if self.template_manager is None:
+            return
+            
+        try:
+            # Get model name from current model
+            model_name = getattr(self.model, 'model_name', 'unknown')
+            if model_name == 'unknown' and hasattr(self.model, '_get_model_name'):
+                model_name = self.model._get_model_name()
+            
+            # Get available templates
+            templates = self.template_manager.get_model_templates(model_name)
+            template_names = ["default"] + sorted(list(templates.keys()))
+            
+            # Update combobox values
+            self.template_combo['values'] = template_names
+            
+            # Reset to default if current selection is not available
+            if self.template_var.get() not in template_names:
+                self.template_var.set("default")
+                
+            logger.info(f"Updated template options for model '{model_name}': {template_names}")
+        except Exception as e:
+            logger.error(f"Error updating template options: {str(e)}")
+
     def _regenerate_caption(self):
         """Regenerate caption for current image with current quality setting"""
         if not self.items:
@@ -1268,10 +1370,23 @@ class ReviewGUI:
             # Get current quality setting
             quality = self.quality_var.get()
             
-            # Analyze image with current quality
+            # Get template settings
+            template_name = None
+            template_variables = {}
+            
+            if hasattr(self, 'template_var') and self.template_var.get() != "default":
+                template_name = self.template_var.get()
+                
+            # Add trigger word if available
+            if hasattr(self, 'trigger_word_var') and self.trigger_word_var.get():
+                template_variables['trigger_word'] = self.trigger_word_var.get()
+            
+            # Analyze image with current settings
             description, clean_caption = self.model.analyze_image(
                 str(img_path), 
-                quality=quality
+                quality=quality,
+                template_name=template_name,
+                template_variables=template_variables
             )
             
             # Update display
@@ -1957,8 +2072,24 @@ class ReviewGUI:
                             paths_needing_analysis_str.append(str(img_path))
 
                     if paths_needing_analysis_str:
+                        # Get template settings for batch processing
+                        template_name = None
+                        template_variables = {}
+                        
+                        if hasattr(self, 'template_var') and self.template_var.get() != "default":
+                            template_name = self.template_var.get()
+                            
+                        # Add trigger word if available
+                        if hasattr(self, 'trigger_word_var') and self.trigger_word_var.get():
+                            template_variables['trigger_word'] = self.trigger_word_var.get()
+                        
                         # Analyze the sub-batch of images that were not in cache
-                        batch_analysis_results = self.model.analyze_images_batch(paths_needing_analysis_str, quality=self.quality_var.get())
+                        batch_analysis_results = self.model.analyze_images_batch(
+                            paths_needing_analysis_str, 
+                            quality=self.quality_var.get(),
+                            template_name=template_name,
+                            template_variables=template_variables
+                        )
                         
                         for i, (description, clean_caption) in enumerate(batch_analysis_results):
                             # Get original item details for the analyzed image

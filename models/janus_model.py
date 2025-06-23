@@ -4,7 +4,7 @@ import logging
 import torch
 from transformers import AutoModelForCausalLM, AutoProcessor
 from PIL import Image
-from typing import Tuple, Optional, List
+from typing import Tuple, Optional, List, Dict, Any
 import os
 from pathlib import Path
 
@@ -79,6 +79,10 @@ class JanusModel(BaseVisionModel):
             logger.error(f"Failed to initialize model: {str(e)}")
             raise
 
+    def _get_model_name(self) -> str:
+        """Get the model name for template system integration."""
+        return "janus"
+
     def get_prompt_for_quality(self, quality: str = "standard") -> str:
         """
         Get the appropriate prompt text for Janus-Pro-1B model based on quality.
@@ -135,18 +139,32 @@ class JanusModel(BaseVisionModel):
                 "repetition_penalty": 1.1 # Light repetition penalty
             }
     
-    def analyze_image(self, image_path: str, quality: str = "standard") -> Tuple[str, Optional[str]]:
+    def _get_legacy_prompt(self, quality: str) -> str:
+        """
+        Get legacy prompt for backward compatibility.
+        """
+        if quality == "detailed":
+            return "Provide a comprehensive and detailed description of this image, including all visible objects, their relationships, colors, composition, lighting, and any notable details or contextual information."
+        elif quality == "creative":
+            return "Create an imaginative and evocative description of this image, focusing on mood, atmosphere, artistic interpretation, and emotional impact."
+        else:  # standard
+            return "Generate a concise, factual caption for this image."
+    
+    def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
+                     template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
         """
         Analyze an image using the Janus-Pro-1B model with quality-specific settings.
         
         Args:
             image_path: Path to the image file
             quality: Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use (e.g., "caption_detailed")
+            template_variables: Variables for template substitution
             
         Returns:
             Tuple[str, Optional[str]]: (description, clean_caption)
         """
-        logger.info(f"JanusModel using quality mode: '{quality}'")
+        logger.info(f"JanusModel using quality mode: '{quality}', template: '{template_name}'")
         try:
             # Validate image path
             if not os.path.exists(image_path):
@@ -162,10 +180,14 @@ class JanusModel(BaseVisionModel):
                 logger.error(f"Error loading image {image_path}: {str(e)}")
                 return "Error: Failed to load or process image.", None
                 
-            # Generate caption with quality-specific settings
+            # Generate caption with template or quality-specific settings
             try:
-                # Get quality-specific prompt and generation parameters
-                text_prompt = self.get_prompt_for_quality(quality)
+                # Get prompt from template system or fallback to legacy
+                if template_name is not None:
+                    text_prompt = self.get_prompt_from_template(quality, template_name, template_variables)
+                else:
+                    text_prompt = self.get_prompt_for_quality(quality)
+                
                 generation_params = self.get_generation_params_for_quality(quality)
                 
                 # Prepare inputs with the quality-specific prompt
@@ -285,13 +307,17 @@ class JanusModel(BaseVisionModel):
             logger.warning(f"Color analysis error: {e}")
             return "color analysis unavailable"
 
-    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard") -> List[Tuple[str, Optional[str]]]:
+    def analyze_images_batch(self, image_paths: List[str], quality: str = "standard", 
+                            template_name: Optional[str] = None, 
+                            template_variables: Optional[Dict[str, Any]] = None) -> List[Tuple[str, Optional[str]]]:
         """
         Analyze a batch of images using the Janus-Pro-1B model by processing them individually.
         
         Args:
             image_paths (List[str]): List of paths to image files
             quality (str): Quality level - "standard", "detailed", or "creative"
+            template_name: Specific template to use
+            template_variables: Variables for template substitution
             
         Returns:
             List[Tuple[str, Optional[str]]]: List of (description, clean_caption) tuples
@@ -301,8 +327,13 @@ class JanusModel(BaseVisionModel):
         
         results = []
         for image_path in image_paths:
-            # Call the existing single-image analysis method
-            description, clean_caption = self.analyze_image(image_path, quality=quality)
+            # Call the existing single-image analysis method with template support
+            description, clean_caption = self.analyze_image(
+                image_path, 
+                quality=quality, 
+                template_name=template_name, 
+                template_variables=template_variables
+            )
             results.append((description, clean_caption))
         return results
 
