@@ -4,12 +4,21 @@ Template Manager for loading, managing, and validating prompt templates.
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import logging
 
 from .template_engine import TemplateEngine
 
+# Define model name constants for consistency
+class ModelNames:
+    FLORENCE2 = "florence2"
+    JANUS = "janus" 
+    QWEN = "qwen"
+    QWEN_LOCAL = "qwen_local"
+
+VALID_MODEL_NAMES = {ModelNames.FLORENCE2, ModelNames.JANUS, ModelNames.QWEN, ModelNames.QWEN_LOCAL}
 
 class TemplateManager:
     """Manager for prompt templates across all vision models."""
@@ -21,10 +30,26 @@ class TemplateManager:
         Args:
             templates_dir: Directory containing template files (defaults to current templates dir)
         """
+        # Secure path handling
         if templates_dir is None:
-            templates_dir = os.path.dirname(os.path.abspath(__file__))
+            # Use the directory where this file is located
+            templates_dir = Path(__file__).parent
+        else:
+            # Validate and resolve the provided path
+            templates_dir = Path(templates_dir).resolve()
+            
+            # Security check: ensure path is not trying to escape
+            if not str(templates_dir).startswith(str(Path(__file__).parent.parent)):
+                raise ValueError("Invalid templates directory path - potential path traversal detected")
         
         self.templates_dir = Path(templates_dir)
+        
+        # Ensure templates directory exists and is a directory
+        if not self.templates_dir.exists():
+            raise FileNotFoundError(f"Templates directory does not exist: {self.templates_dir}")
+        if not self.templates_dir.is_dir():
+            raise NotADirectoryError(f"Templates path is not a directory: {self.templates_dir}")
+        
         self.engine = TemplateEngine()
         self.templates = {}
         self.user_templates = {}
@@ -175,6 +200,16 @@ class TemplateManager:
         Returns:
             True if successfully added
         """
+        # Validate model name
+        if model not in VALID_MODEL_NAMES:
+            self.logger.error(f"Invalid model name: {model}. Valid models: {', '.join(sorted(VALID_MODEL_NAMES))}")
+            return False
+        
+        # Validate template name (alphanumeric + underscore only)
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', template_name):
+            self.logger.error(f"Invalid template name: {template_name}. Must be alphanumeric with underscores only.")
+            return False
+        
         # Validate template
         validation = self.engine.validate_template(template)
         if not validation['valid']:

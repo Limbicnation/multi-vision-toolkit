@@ -329,7 +329,12 @@ class Florence2Model(BaseVisionModel):
 
     def _get_model_name(self) -> str:
         """Get the model name for template system integration."""
-        return "florence2"
+        # Import ModelNames here to avoid circular imports
+        try:
+            from templates.template_manager import ModelNames
+            return ModelNames.FLORENCE2
+        except ImportError:
+            return "florence2"
 
     def get_task_prompt_for_quality(self, quality: str = "standard") -> str:
         """

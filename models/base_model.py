@@ -7,17 +7,30 @@ from PIL import Image
 import os
 import sys
 
-# Add templates directory to path for imports
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-templates_dir = os.path.join(parent_dir, 'templates')
-sys.path.insert(0, templates_dir)
-
+# Import template system using proper relative imports
 try:
-    from template_manager import TemplateManager
+    # Try to import from parent package
+    import sys
+    from pathlib import Path
+    
+    # Add parent directory to path temporarily for import
+    parent_dir = Path(__file__).parent.parent
+    if str(parent_dir) not in sys.path:
+        sys.path.insert(0, str(parent_dir))
+    
+    try:
+        from templates.template_manager import TemplateManager, ModelNames
+        TEMPLATES_AVAILABLE = True
+    finally:
+        # Clean up path modification
+        if str(parent_dir) in sys.path:
+            sys.path.remove(str(parent_dir))
+            
 except ImportError:
     # Fallback if template system is not available
     TemplateManager = None
+    ModelNames = None
+    TEMPLATES_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 

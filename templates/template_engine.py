@@ -3,14 +3,54 @@ Template Engine for prompt variable substitution and rendering.
 """
 
 import re
+import html
 from typing import Dict, Any, Optional
 
+# Define allowed variable names for security
+ALLOWED_VARIABLE_NAMES = {
+    'trigger_word', 'image_context', 'quality_mode', 'task_type', 
+    'question', 'focus', 'model_name', 'filename'
+}
 
 class TemplateEngine:
     """Engine for processing prompt templates with variable substitution."""
     
     def __init__(self):
-        self.variable_pattern = re.compile(r'\{([^}]+)\}')
+        # More restrictive pattern for variable names (alphanumeric + underscore only)
+        self.variable_pattern = re.compile(r'\{([a-zA-Z_][a-zA-Z0-9_]*)\}')
+        
+    def _sanitize_variable_value(self, value: Any) -> str:
+        """Sanitize variable values to prevent injection attacks."""
+        if value is None:
+            return ""
+        
+        # Convert to string and sanitize
+        str_value = str(value)
+        
+        # Remove script-related patterns
+        str_value = re.sub(r'<script[^>]*>.*?</script>', '', str_value, flags=re.IGNORECASE | re.DOTALL)
+        str_value = re.sub(r'javascript:', '', str_value, flags=re.IGNORECASE)
+        str_value = re.sub(r'vbscript:', '', str_value, flags=re.IGNORECASE)
+        str_value = re.sub(r'data:', '', str_value, flags=re.IGNORECASE)
+        
+        # Remove dangerous HTML/XML characters and patterns
+        str_value = re.sub(r'[<>"\'{}\[\]\\]', '', str_value)
+        
+        # Remove control characters
+        str_value = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str_value)
+        
+        # Limit length to prevent DoS
+        if len(str_value) > 200:
+            str_value = str_value[:200] + "..."
+        
+        # Final HTML escape for additional safety
+        str_value = html.escape(str_value, quote=False)
+        
+        return str_value.strip()
+    
+    def _validate_variable_name(self, var_name: str) -> bool:
+        """Validate variable name against allowed list."""
+        return var_name in ALLOWED_VARIABLE_NAMES
     
     def render(self, template: str, variables: Optional[Dict[str, Any]] = None) -> str:
         """
@@ -43,12 +83,24 @@ class TemplateEngine:
         else:
             final_vars['trigger_word'] = ''
         
-        # Perform variable substitution
-        rendered = template
-        for match in self.variable_pattern.finditer(template):
+        # Perform secure variable substitution using re.sub for efficiency
+        def replacement_func(match):
             var_name = match.group(1)
+            
+            # Validate variable name
+            if not self._validate_variable_name(var_name):
+                # Return empty string for invalid variable names
+                return ""
+            
             if var_name in final_vars:
-                rendered = rendered.replace(match.group(0), str(final_vars[var_name]))
+                # Sanitize the variable value
+                sanitized_value = self._sanitize_variable_value(final_vars[var_name])
+                return sanitized_value
+            else:
+                # Return placeholder for undefined variables
+                return f"[{var_name}]"
+        
+        rendered = self.variable_pattern.sub(replacement_func, template)
         
         # Clean up extra spaces and formatting
         rendered = self._clean_template(rendered)
@@ -100,9 +152,25 @@ class TemplateEngine:
         }
         
         try:
-            # Extract variables
+            # Check for empty template
+            if not template.strip():
+                result['valid'] = False
+                result['errors'].append("Template cannot be empty")
+                return result
+            
+            # Extract variables using the secure pattern
             variables = self.extract_variables(template)
             result['variables'] = variables
+            
+            # Validate each variable name
+            invalid_vars = []
+            for var_name in variables:
+                if not self._validate_variable_name(var_name):
+                    invalid_vars.append(var_name)
+            
+            if invalid_vars:
+                result['valid'] = False
+                result['errors'].append(f"Invalid variable names: {', '.join(invalid_vars)}. Allowed: {', '.join(sorted(ALLOWED_VARIABLE_NAMES))}")
             
             # Check for unclosed braces
             open_braces = template.count('{')
@@ -115,14 +183,22 @@ class TemplateEngine:
             if '{{' in template or '}}' in template:
                 result['warnings'].append("Nested braces detected - may cause unexpected behavior")
             
-            # Check for empty template
-            if not template.strip():
-                result['valid'] = False
-                result['errors'].append("Template cannot be empty")
+            # Check for malformed variable syntax
+            malformed_pattern = re.compile(r'\{[^a-zA-Z_][^}]*\}')
+            malformed_matches = malformed_pattern.findall(template)
+            if malformed_matches:
+                result['warnings'].append(f"Malformed variable syntax detected: {malformed_matches}")
             
             # Check for very long templates (> 1000 chars)
             if len(template) > 1000:
                 result['warnings'].append("Template is very long (>1000 chars) - consider simplifying")
+            
+            # Check for potential injection patterns
+            suspicious_patterns = ['<script', 'javascript:', 'data:', 'vbscript:', '<%', '<?']
+            found_patterns = [pattern for pattern in suspicious_patterns if pattern.lower() in template.lower()]
+            if found_patterns:
+                result['valid'] = False
+                result['errors'].append(f"Suspicious content detected: {', '.join(found_patterns)}")
                 
         except Exception as e:
             result['valid'] = False

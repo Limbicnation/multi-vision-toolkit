@@ -86,7 +86,12 @@ class QwenModel(BaseVisionModel):
 
     def _get_model_name(self) -> str:
         """Get the model name for template system integration."""
-        return "qwen"
+        # Import ModelNames here to avoid circular imports
+        try:
+            from templates.template_manager import ModelNames
+            return ModelNames.QWEN
+        except ImportError:
+            return "qwen"
 
     def analyze_image(self, image_path: str, quality: str = "standard", template_name: Optional[str] = None, 
                      template_variables: Optional[Dict[str, Any]] = None) -> Tuple[str, Optional[str]]:
@@ -242,7 +247,12 @@ class QwenCaptioner(BaseVisionModel):
 
     def _get_model_name(self) -> str:
         """Get the model name for template system integration."""
-        return "qwen"
+        # Import ModelNames here to avoid circular imports
+        try:
+            from templates.template_manager import ModelNames
+            return ModelNames.QWEN
+        except ImportError:
+            return "qwen"
 
     def _get_legacy_prompt(self, quality: str) -> str:
         """Get legacy prompt for backward compatibility."""

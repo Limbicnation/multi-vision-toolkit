@@ -81,7 +81,12 @@ class JanusModel(BaseVisionModel):
 
     def _get_model_name(self) -> str:
         """Get the model name for template system integration."""
-        return "janus"
+        # Import ModelNames here to avoid circular imports
+        try:
+            from templates.template_manager import ModelNames
+            return ModelNames.JANUS
+        except ImportError:
+            return "janus"
 
     def get_prompt_for_quality(self, quality: str = "standard") -> str:
         """
