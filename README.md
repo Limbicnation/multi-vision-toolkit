@@ -8,7 +8,7 @@
 
 ## 🚀 Key Features
 
-- **Multiple Vision Models**: Florence-2 (advanced vision tasks), Janus-Pro-1B (advanced multimodal understanding), Qwen2.5-VL (high-quality captioning and analysis), and Qwen2.5-VL-7B-Captioner-Relaxed (specialized detailed captioning)
+- **Multiple Vision Models**: Florence-2 (advanced vision tasks), Janus-Pro-1B (advanced multimodal understanding), and Qwen2.5-VL-3B-Instruct (high-quality captioning and analysis, optimized for performance)
 - **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and Janus-Pro-1B)
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
@@ -30,27 +30,15 @@
 conda create -n vision-env python=3.11
 conda activate vision-env
 
-# Install PyTorch (v2.6+ recommended for compatibility and security)
-# Option 1: Using pip (Recommended for latest versions like 2.6+)
-# Replace cu124 with your CUDA version (e.g., cu118, cpu) if needed
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# Install PyTorch (v2.6.0 pinned for compatibility and stability)
+# Replace cu126 with your CUDA version (e.g., cu118, cpu) if needed
+pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu126
 
-# Option 2: Using conda (May have slightly older versions)
-# Replace pytorch-cuda=12.4 with your CUDA version (e.g., 11.8) or remove for CPU
-# conda install pytorch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 pytorch-cuda=12.4 -c pytorch -c nvidia
-
-# Install core dependencies
+# Install core dependencies (includes pinned versions for stability)
 pip install -r requirements.txt
 
-# Additional steps for specific models:
-
-# For Qwen2.5-VL (using non-AWQ version):
-# 1. Install/Upgrade transformers (latest from git source is crucial)
-pip install git+https://github.com/huggingface/transformers.git --upgrade
-# 2. Install qwen utilities
-pip install qwen-vl-utils[decord]==0.0.8
-# 3. (Optional, for performance) Install flash-attn
-pip install flash-attn --no-build-isolation
+# Download models locally (recommended to avoid download issues)
+./clone_models.sh
 
 # For Florence-2 (if encountering issues):
 # Ensure timm is up-to-date
@@ -102,21 +90,19 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 | Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
 | Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
 | Janus-Pro-1B | Advanced multimodal understanding and captioning | 4GB+ | Dummy model |
-| Qwen2.5-VL-3B-Instruct | High-quality multimodal captioning | 8GB+ (approx.) | CLIP model |
+| Qwen2.5-VL-3B-Instruct | High-quality captioning, optimized for performance | 6GB+ (with 8-bit quantization) | CLIP model |
 
-Each model has a fallback mechanism if the primary model fails to load. The Qwen model (non-AWQ) will fall back to a CLIP-based implementation if it encounters issues. The Janus-Pro-1B model supports efficient quantization for lower memory requirements.
+Each model has a fallback mechanism if the primary model fails to load. The Qwen model uses local files by default and will fall back to a CLIP-based implementation if it encounters issues. All models use memory-optimized sequential processing to prevent out-of-memory errors on GPUs with limited VRAM.
 
 ## 🔧 Troubleshooting
 
-- **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes
-- **Model Loading**: Ensure `transformers` is updated from git source for Qwen (`pip install git+https://github.com/huggingface/transformers.git --upgrade`) or clear cache.
+- **Memory Issues**: Use `--variant base` for lower VRAM usage or close other GPU processes. All models now use sequential processing to prevent OOM errors.
+- **Flash Attention Conflicts**: If you see "undefined symbol" errors, the toolkit automatically disables flash attention for stability.
 - **Image Errors**: Verify image format and permissions
-- **Qwen Model Errors**: Ensure `transformers` is installed from GitHub and `qwen-vl-utils` with the `[decord]` feature is installed. The non-AWQ version of Qwen is now used by default. If it fails, it will fall back to CLIP. For performance, consider installing `flash-attn`.
-- **KeyError: 'qwen2_5_vl'**: This indicates your `transformers` library is too old or not installed from the git source. Update with `pip install git+https://github.com/huggingface/transformers.git --upgrade`.
-- **Model Download Issues**: Check your internet connection and HuggingFace token if models fail to download. See below for setting up a token.
+- **Qwen Model**: Uses local Qwen2.5-VL-3B-Instruct model by default. Run `./clone_models.sh` to download required models locally.
+- **Model Download Issues**: Use `./clone_models.sh` to download models locally instead of relying on automatic downloads.
 - **Folder Drag and Drop**: When dragging folders, the application will recursively scan for all supported image files in all subdirectories.
-- **Qwen "IncompleteBody" Error**: If encountering network errors during Qwen model downloads, use the provided `clone_local_models.sh` script to download models directly (see Local Model Storage below).
-- **Qwen Character Encoding Issues**: The toolkit now automatically applies encoding fixes to clean problematic text output from the Qwen model.
+- **Performance**: Batch processing is intentionally sequential to prevent memory issues. This is normal behavior for stability.
 
 ### Setting Up HuggingFace Token
 
@@ -137,24 +123,22 @@ You can customize the cache location by setting the `TRANSFORMERS_CACHE` environ
 
 ### Local Model Storage
 
-To avoid issues with model caching or to ensure models persist even when the cache is cleared, you can use local model storage:
+The toolkit now uses local models by default to avoid download issues and ensure stability:
 
-1. **Clone models locally** using the provided script:
+1. **Download models** using the provided script:
    ```bash
-   ./clone_local_models.sh
+   ./clone_models.sh
+   ```
+   This downloads all supported models to `models/weights/` directory.
+
+2. **Models are used automatically** - no additional configuration needed:
+   ```bash
+   python main.py --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
    ```
 
-2. **Set up environment** for local model usage:
-   ```bash
-   source .env.local
-   ```
+3. **QwenCaptioner model** automatically uses the local `Qwen2.5-VL-3B-Instruct` for optimal performance and stability.
 
-3. **Run with local Qwen model**:
-   ```bash
-   python main.py --model qwen_local --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
-   ```
-
-This approach uses git-lfs to properly download the model files and avoids the "IncompleteBody" errors that can occur with the regular downloading mechanism.
+This approach uses git-lfs to properly download the model files and avoids network-related errors. The local 3B model provides excellent captioning quality while using less memory than the 7B variant.
 
 ### Common Error: CVE-2025-32434 Vulnerability
 
