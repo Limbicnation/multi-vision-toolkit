@@ -37,6 +37,11 @@ torchvision_version = _check_installed_version('torchvision')
 logging.info(f"PyTorch version: {torch_version}")
 logging.info(f"Torchvision version: {torchvision_version}")
 
+# Disable flash attention globally to prevent symbol conflicts
+os.environ["DISABLE_FLASH_ATTENTION"] = "1"
+os.environ["FLASH_ATTENTION_SKIP_CUDA_CHECK"] = "1"
+os.environ["USE_FLASH_ATTENTION"] = "0"
+
 # Import torch, but defer torchvision import to when it's actually needed
 try:
     import torch

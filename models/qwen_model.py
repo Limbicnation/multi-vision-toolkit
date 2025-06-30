@@ -11,6 +11,10 @@ import importlib
 # Set PyTorch memory allocation config to avoid fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+# Disable flash attention globally to prevent symbol conflicts
+os.environ["DISABLE_FLASH_ATTENTION"] = "1"
+os.environ["FLASH_ATTENTION_SKIP_CUDA_CHECK"] = "1"
+
 try:
     import torch
 except ImportError:
@@ -31,21 +35,91 @@ CLIPModel = None # type: ignore
 CLIPProcessor = None # type: ignore
 process_vision_info_fn = None # type: ignore
 
-try:
-    from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
-    _QWEN_CLASS_AVAILABLE = True
-    logger.info("Successfully imported AutoModelForImageTextToText, AutoProcessor, AutoTokenizer.")
-except ImportError as e:
-    logger.error(
-        f"Failed to import Qwen classes from transformers: {e}. "
-        "Ensure transformers is installed from git source: 'pip install git+https://github.com/huggingface/transformers.git --upgrade'"
-    )
+def safe_import_transformers():
+    """Safely import transformers with flash attention guards."""
+    global _QWEN_CLASS_AVAILABLE, AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
+    
+    try:
+        # Check for flash attention conflicts before importing
+        import importlib.util
+        if importlib.util.find_spec("flash_attn"):
+            logger.warning("Flash attention detected - may cause symbol conflicts, proceeding with caution")
+        
+        from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
+        _QWEN_CLASS_AVAILABLE = True
+        logger.info("Successfully imported AutoModelForImageTextToText, AutoProcessor, AutoTokenizer.")
+        return True
+        
+    except ImportError as e:
+        error_msg = str(e)
+        if "flash_attn" in error_msg or "undefined symbol" in error_msg:
+            logger.error(f"Flash attention symbol conflict detected: {error_msg}")
+            logger.info("Attempting import without flash attention...")
+            # Try again with more aggressive flash attention disabling
+            os.environ["USE_FLASH_ATTENTION"] = "0"
+            os.environ["FLASH_ATTN_DISABLE"] = "1"
+            try:
+                from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
+                _QWEN_CLASS_AVAILABLE = True
+                logger.info("Successfully imported transformers without flash attention.")
+                return True
+            except Exception as e2:
+                logger.error(f"Still failed after disabling flash attention: {e2}")
+                _QWEN_CLASS_AVAILABLE = False
+                return False
+        else:
+            logger.error(f"Failed to import Qwen classes from transformers: {e}")
+            _QWEN_CLASS_AVAILABLE = False
+            return False
+            
+    except Exception as e:
+        logger.error(f"Unexpected error importing transformers: {e}")
+        _QWEN_CLASS_AVAILABLE = False
+        return False
 
-try:
-    from transformers import CLIPModel, CLIPProcessor
-    logger.info("Successfully imported CLIPModel and CLIPProcessor for fallback.")
-except ImportError as e:
-    logger.warning(f"Failed to import CLIPModel or CLIPProcessor: {e}. Fallback to CLIP may not work.")
+# Attempt safe import
+safe_import_transformers()
+
+def safe_import_clip():
+    """Safely import CLIP models with flash attention guards."""
+    global CLIPModel, CLIPProcessor
+    
+    try:
+        from transformers import CLIPModel, CLIPProcessor
+        logger.info("Successfully imported CLIPModel and CLIPProcessor for fallback.")
+        return True
+        
+    except ImportError as e:
+        logger.warning(f"Failed to import CLIPModel or CLIPProcessor: {e}. Fallback to CLIP may not work.")
+        return False
+        
+    except Exception as e:
+        error_msg = str(e)
+        if "flash_attn" in error_msg or "undefined symbol" in error_msg:
+            logger.warning(f"CLIP import flash attention conflict: {e}. Attempting workaround...")
+            try:
+                # Try importing individual components
+                import transformers
+                CLIPModel = getattr(transformers, 'CLIPModel', None)
+                CLIPProcessor = getattr(transformers, 'CLIPProcessor', None)
+                if CLIPModel and CLIPProcessor:
+                    logger.info("Successfully imported CLIP via workaround method.")
+                    return True
+                else:
+                    raise ImportError("CLIP classes not found in transformers")
+            except Exception as e2:
+                logger.error(f"CLIP workaround failed: {e2}")
+                CLIPModel = None
+                CLIPProcessor = None
+                return False
+        else:
+            logger.warning(f"Unexpected CLIP import error: {e}")
+            CLIPModel = None
+            CLIPProcessor = None
+            return False
+
+# Attempt safe CLIP import
+safe_import_clip()
 
 try:
     from qwen_vl_utils import process_vision_info
@@ -70,11 +144,19 @@ class QwenModel(BaseVisionModel):
     }
 
     def __init__(self, model_path: str = None):
-        # Always default to the non-AWQ version due to autoawq complexities
-        self.model_path = "Qwen/Qwen2.5-VL-3B-Instruct" 
-        logger.info(f"Initializing QwenModel with non-AWQ model: {self.model_path}")
-        if model_path is not None and model_path != self.model_path:
-            logger.warning(f"Specified model_path '{model_path}' will be overridden by non-AWQ default '{self.model_path}'.")
+        # Use local model by default to avoid downloads
+        default_local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Qwen2.5-VL-3B-Instruct")
+        
+        if model_path is None:
+            if os.path.exists(default_local_path):
+                self.model_path = default_local_path
+                logger.info(f"Using local Qwen model at: {self.model_path}")
+            else:
+                self.model_path = "Qwen/Qwen2.5-VL-3B-Instruct"
+                logger.warning(f"Local model not found, using remote: {self.model_path}")
+        else:
+            self.model_path = model_path
+            logger.info(f"Using specified model path: {self.model_path}")
             
         self._check_dependencies()
         self.tokenizer = None 
@@ -170,7 +252,19 @@ class QwenCaptioner(BaseVisionModel):
     }
 
     def __init__(self, model_path: str = None, use_quantization: str = None):
-        self.model_path = model_path or "Ertugrul/Qwen2.5-VL-7B-Captioner-Relaxed"
+        # Use local 3B model by default to avoid downloads
+        default_local_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", "weights", "Qwen2.5-VL-3B-Instruct")
+        self.model_path = model_path or default_local_path
+        
+        # Validate local model exists
+        if not model_path and not os.path.exists(self.model_path):
+            logger.error(f"Local Qwen model not found at {self.model_path}")
+            logger.error("Please download the model using: ./clone_models.sh")
+            logger.error("Or place the Qwen2.5-VL-3B-Instruct model in models/weights/")
+            raise FileNotFoundError(f"Qwen model not found at {self.model_path}")
+        elif not model_path:
+            logger.info(f"Using local Qwen2.5-VL-3B-Instruct model at: {self.model_path}")
+            logger.info("Optimizing 3B model for captioning tasks with enhanced prompts")
         
         # Check for environment variable to force 4-bit quantization
         if os.getenv("QWEN_FORCE_4BIT", "").lower() in ["1", "true", "yes"]:
@@ -206,44 +300,44 @@ class QwenCaptioner(BaseVisionModel):
         return [caption if caption else description for description, caption in results]
 
     def get_instruction_for_quality_captioner(self, quality: str) -> str:
-        """Get captioner-specific instructions optimized for the 7B Captioner model."""
+        """Get captioner-specific instructions optimized for best captioning results."""
         if quality == "standard":
-            return "Describe this image concisely."
+            return "Create a clear, accurate caption for this image. Focus on the main subjects and their actions."
         elif quality == "detailed":
-            return "Generate a comprehensive, detailed caption for this image. Include objects, people, setting, colors, mood, and composition details."
+            return "Generate a comprehensive, detailed image caption. Describe all visible elements including: objects, people, animals, setting, colors, lighting, composition, mood, and any text. Be thorough but concise."
         elif quality == "creative":
-            return "Create an artistic, evocative description of this image that captures both literal elements and emotional atmosphere."
-        return "Caption this image."
+            return "Write an engaging, descriptive caption that captures both the visual details and emotional essence of this image. Use vivid language to paint a picture with words."
+        return "Write a descriptive caption for this image."
 
     def get_generation_params_captioner(self, quality: str) -> dict:
-        """Get captioner-specific generation parameters optimized for the 7B model."""
+        """Get captioner-specific generation parameters optimized for best quality captioning."""
         if quality == "standard":
             return {
-                "max_new_tokens": 100,
-                "temperature": 0.7,
-                "top_p": 0.9,
+                "max_new_tokens": 80,
+                "temperature": 0.3,  # Lower for more focused captions
+                "top_p": 0.8,
                 "do_sample": True,
-                "repetition_penalty": 1.1
+                "repetition_penalty": 1.2
             }
         elif quality == "detailed":
             return {
-                "max_new_tokens": 300,
-                "temperature": 0.6,
+                "max_new_tokens": 250,
+                "temperature": 0.4,  # Slightly higher for detailed descriptions
                 "top_p": 0.85,
                 "repetition_penalty": 1.15,
                 "do_sample": True,
-                "num_beams": 3
+                "num_beams": 2  # Reduced for faster performance
             }
         elif quality == "creative":
             return {
-                "max_new_tokens": 200,
-                "temperature": 0.8,
-                "top_p": 0.95,
+                "max_new_tokens": 180,
+                "temperature": 0.7,  # Higher for creativity
+                "top_p": 0.9,
                 "repetition_penalty": 1.1,
                 "do_sample": True,
-                "top_k": 50
+                "top_k": 40
             }
-        return {"max_new_tokens": 100, "temperature": 0.7, "top_p": 0.9, "do_sample": True}
+        return {"max_new_tokens": 80, "temperature": 0.3, "top_p": 0.8, "do_sample": True}
 
     def _get_model_name(self) -> str:
         """Get the model name for template system integration."""
@@ -279,6 +373,9 @@ class QwenCaptioner(BaseVisionModel):
             pil_image = Image.open(image_path)
             if pil_image.mode != 'RGB':
                 pil_image = pil_image.convert('RGB')
+            
+            # Preprocess image for memory efficiency
+            pil_image = self._preprocess_image_for_memory(pil_image)
         except Exception as e:
             logger.error(f"Error loading image {image_path}: {str(e)}")
             return "Error: Failed to load or process image.", None
@@ -304,10 +401,13 @@ class QwenCaptioner(BaseVisionModel):
             # Use captioner-specific instruction for legacy mode
             instruction = self.get_instruction_for_quality_captioner(quality)
         
+        # Enhanced system prompt for better captioning
+        system_prompt = "You are an expert image captioning specialist. Create accurate, detailed, and engaging descriptions of images. Focus on what you can see clearly and describe it in natural, flowing language."
+        
         messages = [
             {
                 "role": "system",
-                "content": [{"type": "text", "text": "You are an expert image describer."}],
+                "content": [{"type": "text", "text": system_prompt}],
             },
             {
                 "role": "user",
@@ -331,8 +431,10 @@ class QwenCaptioner(BaseVisionModel):
             # Use captioner-specific generation parameters
             generation_params = self.get_generation_params_captioner(quality)
             
+            # Use memory-efficient inference with mixed precision
             with torch.inference_mode():
-                generated_ids = self.model.generate(**inputs, **generation_params)
+                with torch.cuda.amp.autocast(dtype=torch.float16):
+                    generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
             caption = self.processor.batch_decode(
@@ -348,7 +450,7 @@ class QwenCaptioner(BaseVisionModel):
             elif not isinstance(caption, str):
                 caption = str(caption)
             
-            model_name = "Qwen2.5-VL-7B-Captioner-Relaxed"
+            model_name = "Qwen2.5-VL-3B-Instruct (Optimized for Captioning)"
             description = f"Description: {caption}\n\nGenerated by: {model_name}"
             return description, caption
 
@@ -439,17 +541,18 @@ class QwenCaptioner(BaseVisionModel):
                 model_kwargs["device_map"] = "auto" # Fallback for other scenarios
                 logger.info("Setting device_map to 'auto'.")
 
-            if self.device.startswith('cuda') and (self.torch_dtype == torch.bfloat16 or self.torch_dtype == torch.float16):
-                try:
-                    import flash_attn 
-                    logger.info("Attempting to enable Flash Attention 2 for Qwen model.")
-                    model_kwargs["attn_implementation"] = "flash_attention_2"
-                except ImportError:
-                    logger.warning("flash_attn library not found. Flash Attention 2 cannot be enabled for Qwen. Install with 'pip install flash-attn --no-build-isolation'")
-                except Exception as e: # Catch other potential errors if attn_implementation is not supported by the transformers version
-                    logger.warning(f"Could not enable Flash Attention 2 for Qwen: {e}. Proceeding without it.")
+            # Disable flash attention to prevent symbol conflicts
+            logger.info("Flash Attention disabled to prevent symbol conflicts - using eager attention for stability")
+            model_kwargs["attn_implementation"] = "eager"
             
             self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
+            
+            # Patch missing is_causal attribute for vision attention modules
+            self._patch_vision_attention_is_causal()
+            
+            # Configure memory-efficient generation
+            self._setup_memory_efficient_generation()
+            
             logger.info(f"Successfully loaded Qwen model: {self.model_path} with kwargs: {model_kwargs}")
             
             self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
@@ -511,7 +614,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.info(f"Loading Qwen2.5-VL-7B-Captioner-Relaxed model: {self.model_path}")
             
             model_kwargs: Dict[str, Any] = {
-                "torch_dtype": self.torch_dtype,
+                "torch_dtype": torch.float16,  # Use FP16 for better memory efficiency
                 "trust_remote_code": True,
                 "low_cpu_mem_usage": True,  # Enable low CPU memory usage
             }
@@ -551,24 +654,18 @@ class QwenCaptioner(BaseVisionModel):
                 model_kwargs["device_map"] = "auto"
                 logger.info("Setting device_map to 'auto'.")
 
-            # Enable Flash Attention for performance if available
-            if self.device.startswith('cuda') and not self.use_quantization:
-                try:
-                    import flash_attn 
-                    logger.info("Attempting to enable Flash Attention 2 for QwenCaptioner.")
-                    model_kwargs["attn_implementation"] = "flash_attention_2"
-                except ImportError:
-                    logger.info("flash_attn library not found. Using eager attention (slower but more compatible).")
-                    model_kwargs["attn_implementation"] = "eager"
-                except Exception as e:
-                    logger.warning(f"Could not enable Flash Attention 2: {e}. Using eager attention.")
-                    model_kwargs["attn_implementation"] = "eager"
-            elif self.device.startswith('cuda'):
-                # Use eager attention for quantized models for compatibility
-                model_kwargs["attn_implementation"] = "eager"
-                logger.info("Using eager attention for quantized model.")
+            # Always use eager attention to prevent flash attention symbol conflicts
+            model_kwargs["attn_implementation"] = "eager"
+            logger.info("Using eager attention for stability and compatibility (flash attention disabled)")
             
             self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
+            
+            # Patch missing is_causal attribute for vision attention modules
+            self._patch_vision_attention_is_causal()
+            
+            # Configure memory-efficient generation
+            self._setup_memory_efficient_generation()
+            
             logger.info(f"Successfully loaded QwenCaptioner model: {self.model_path} with kwargs: {model_kwargs}")
             
             # Set up processor with pixel limits for cost/quality balance
@@ -716,8 +813,10 @@ class QwenCaptioner(BaseVisionModel):
             # Use quality-specific generation parameters
             generation_params = self.get_generation_params(quality)
             
+            # Use memory-efficient inference with mixed precision
             with torch.inference_mode():
-                generated_ids = self.model.generate(**inputs, **generation_params)
+                with torch.cuda.amp.autocast(dtype=torch.float16):
+                    generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
             caption = self.processor.batch_decode(
@@ -747,122 +846,31 @@ class QwenCaptioner(BaseVisionModel):
         if not image_paths:
             return []
 
-        results: List[Optional[Tuple[str, Optional[str]]]] = [None] * len(image_paths)
-        pil_images_to_process: List[Tuple[int, Image.Image]] = []  # Stores (original_index, pil_image)
-
+        # Force single-image processing to prevent OOM
+        logger.info(f"Processing {len(image_paths)} images individually to prevent OOM (RTX 4090 memory constraint)")
+        results = []
+        
         for i, image_path in enumerate(image_paths):
-            if not os.path.exists(image_path):
-                logger.error(f"Image file not found: {image_path}")
-                results[i] = (f"Error: Image file not found at {image_path}.", None)
-                continue
             try:
-                pil_image = Image.open(image_path)
-                if pil_image.mode != 'RGB':
-                    pil_image = pil_image.convert('RGB')
-                pil_images_to_process.append((i, pil_image))
-            except Exception as e:
-                logger.error(f"Error loading image {image_path}: {str(e)}")
-                results[i] = (f"Error: Failed to load image {image_path}: {str(e)}.", None)
-        
-        actual_pil_images = [img for _, img in pil_images_to_process]
-        original_indices_for_processing = [idx for idx, _ in pil_images_to_process]
-
-        if not actual_pil_images:
-            return [res if res is not None else ("Error: No valid images to process.", None) for res in results]
-
-        if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, _QWEN_CLASS_AVAILABLE]):
-            logger.info("Using fallback CLIP model for batch image analysis.")
-            clip_batch_results = self._analyze_batch_with_clip(actual_pil_images, quality)
-            for i, res_tuple in enumerate(clip_batch_results):
-                original_idx = original_indices_for_processing[i]
-                results[original_idx] = res_tuple
-            return [res if res is not None else ("Error: Fallback processing issue.", None) for res in results]
-
-        # --- Qwen Batch Processing ---
-        texts_for_template_batch: List[str] = []
-        
-        # Keep track of original indices that successfully make it through Qwen pre-processing
-        valid_original_indices_for_qwen_output: List[int] = []
-
-        for i, pil_image in enumerate(actual_pil_images):
-            current_original_idx = original_indices_for_processing[i]
-            # Determine instruction/prompt to use
-            if template_name is not None:
-                # Get prompt from template
-                instruction = self.get_prompt_from_template(quality, template_name, template_variables)
-            else:
-                # Get quality-specific instruction for legacy mode
-                instruction = self.get_instruction_for_quality(quality)
-            current_messages = [
-                {
-                    "role": "system",
-                    "content": [{"type": "text", "text": "You are an expert image describer."}],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": instruction},
-                        {"type": "image", "image": pil_image},
-                    ],
-                },
-            ]
-            
-            try:
-                text_for_template = self.processor.apply_chat_template(current_messages, tokenize=False, add_generation_prompt=True)
-                texts_for_template_batch.append(text_for_template)
-                valid_original_indices_for_qwen_output.append(current_original_idx)
-            except Exception as e:
-                err_msg = f"Error: Qwen pre-processing failed for {image_paths[current_original_idx]} ({str(e)})."
-                logger.error(err_msg)
-                results[current_original_idx] = (err_msg, None)
-
-        if not texts_for_template_batch:
-            logger.info("No images were successfully pre-processed for Qwen batch.")
-            return [res if res is not None else ("Error: Qwen pre-processing failed for all images.", None) for res in results]
-
-        try:
-            inputs = self.processor(
-                text=texts_for_template_batch,
-                images=actual_pil_images,
-                padding=True,
-                return_tensors="pt",
-            ).to(self.device)
-
-            # Use quality-specific generation parameters
-            generation_params = self.get_generation_params(quality)
-            
-            with torch.inference_mode():
-                generated_ids = self.model.generate(**inputs, **generation_params)
-            
-            generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-            captions_batch_list = self.processor.batch_decode(
-                generated_ids_trimmed, 
-                skip_special_tokens=True, 
-                clean_up_tokenization_spaces=True  # Try setting to True to help with encoding issues
-            )
-            
-            model_name_str = "Qwen2.5-VL (non-AWQ)"
-            for i, caption_str in enumerate(captions_batch_list):
-                clean_caption = self.clean_output(caption_str)
+                result = self.analyze_image(image_path, quality, template_name, template_variables)
+                results.append(result)
                 
-                # Ensure clean_caption is a string, not a list
-                if isinstance(clean_caption, list):
-                    clean_caption = clean_caption[0] if clean_caption else ""
-                elif not isinstance(clean_caption, str):
-                    clean_caption = str(clean_caption)
+                # Aggressive memory cleanup between images
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()
+                    
+                logger.debug(f"Processed image {i+1}/{len(image_paths)}: {image_path}")
                 
-                description = f"Description: {clean_caption}\n\nGenerated by: {model_name_str}"
-                current_original_idx = valid_original_indices_for_qwen_output[i]
-                results[current_original_idx] = (description, clean_caption)
-
-        except Exception as e:
-            err_msg_batch = f"Error: Qwen batch generation failed ({str(e)})."
-            logger.error(err_msg_batch)
-            for original_idx in valid_original_indices_for_qwen_output:
-                if results[original_idx] is None: # Only update if not already set by individual pre-processing error
-                     results[original_idx] = (err_msg_batch, None)
+            except Exception as e:
+                logger.error(f"Error processing image {image_path}: {str(e)}")
+                results.append((f"Error: Failed to process image {image_path}: {str(e)}", None))
+                
+                # Still cleanup memory even on error
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         
-        return [res if res is not None else ("Error: Unknown processing issue.", None) for res in results]
+        return results
 
     def get_clip_description_for_quality(self, top_category: str, scores: list, quality: str = "standard") -> str:
         """Get appropriately detailed CLIP description based on quality setting"""
@@ -1034,6 +1042,89 @@ class QwenCaptioner(BaseVisionModel):
     def _preprocess_image(self, image: Image.Image) -> Any:
         logger.debug("QwenModel._preprocess_image called, but typically handled by processor/tokenizer.")
         return image 
+
+    def _patch_vision_attention_is_causal(self):
+        """Patch vision attention modules to add missing is_causal attribute."""
+        try:
+            # Define search paths in order of preference
+            search_paths = []
+            if hasattr(self.model, 'vision_model'):
+                search_paths.append(self.model.vision_model)
+            if hasattr(self.model, 'model') and hasattr(self.model.model, 'vision_model'):
+                search_paths.append(self.model.model.vision_model)
+            # Always include full model as fallback
+            search_paths.append(self.model)
+            
+            patched_count = 0
+            for search_root in search_paths:
+                for name, module in search_root.named_modules():
+                    if 'VisionAttention' in module.__class__.__name__ and not hasattr(module, 'is_causal'):
+                        module.is_causal = False
+                        logger.debug(f"Patched {name} with is_causal=False")
+                        patched_count += 1
+                if patched_count > 0:
+                    break  # Stop after successful patching
+                    
+            if patched_count > 0:
+                logger.info(f"Successfully patched {patched_count} vision attention modules with is_causal attribute")
+            else:
+                logger.warning("No vision attention modules found to patch")
+                
+        except Exception as e:
+            logger.warning(f"Could not patch vision attention modules: {e}")
+
+    def _preprocess_image_for_memory(self, image: Image.Image, max_resolution: int = 1024) -> Image.Image:
+        """Resize image if too large to save memory.
+        
+        Args:
+            image: PIL Image to potentially resize
+            max_resolution: Maximum width or height allowed
+            
+        Returns:
+            PIL Image, potentially resized
+        """
+        if isinstance(image, Image.Image):
+            width, height = image.size
+            if width > max_resolution or height > max_resolution:
+                # Calculate new size maintaining aspect ratio
+                ratio = min(max_resolution / width, max_resolution / height)
+                new_size = (int(width * ratio), int(height * ratio))
+                logger.info(f"Resizing image from {image.size} to {new_size} for memory efficiency")
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
+        return image
+
+    def _setup_memory_efficient_generation(self):
+        """Configure model for memory-efficient generation."""
+        try:
+            # Configure generation settings for memory efficiency
+            if hasattr(self.model, 'generation_config'):
+                current_max_tokens = getattr(self.model.generation_config, 'max_new_tokens', None)
+                if current_max_tokens is not None:
+                    self.model.generation_config.max_new_tokens = min(300, current_max_tokens)
+                else:
+                    self.model.generation_config.max_new_tokens = 300
+                self.model.generation_config.num_beams = 1  # Disable beam search for memory
+                if hasattr(self.model.generation_config, 'use_cache'):
+                    self.model.generation_config.use_cache = False  # Disable KV cache
+            
+            # Enable gradient checkpointing if available
+            if hasattr(self.model, 'gradient_checkpointing_enable'):
+                self.model.gradient_checkpointing_enable()
+                logger.info("Enabled gradient checkpointing for memory efficiency")
+            
+            # Set memory fraction if CUDA available
+            if torch.cuda.is_available():
+                torch.cuda.set_per_process_memory_fraction(0.85)  # Use 85% of GPU memory
+                logger.info("Set CUDA memory fraction to 85%")
+            
+            # Enable memory efficient attention if available
+            if hasattr(self.model, 'config'):
+                if hasattr(self.model.config, 'use_memory_efficient_attention'):
+                    self.model.config.use_memory_efficient_attention = True
+                    
+            logger.info("Memory-efficient generation settings configured")
+        except Exception as e:
+            logger.warning(f"Could not configure memory-efficient settings: {e}")
 
     @classmethod
     def is_available(cls) -> bool:

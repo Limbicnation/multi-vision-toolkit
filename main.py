@@ -26,6 +26,64 @@ try:
     print("Applied Qwen encoding fix")
 except ImportError:
     print("Warning: fix_qwen_encoding.py not found. Character encoding issues may occur with Qwen model.")
+
+def validate_environment():
+    """Validate the environment for package compatibility."""
+    logger = logging.getLogger(__name__)
+    
+    # Disable flash attention globally to prevent conflicts
+    import os
+    os.environ["DISABLE_FLASH_ATTENTION"] = "1"
+    os.environ["FLASH_ATTENTION_SKIP_CUDA_CHECK"] = "1"
+    os.environ["USE_FLASH_ATTENTION"] = "0"
+    
+    # Check torch version
+    try:
+        import torch
+        torch_version = torch.__version__
+        logger.info(f"PyTorch version: {torch_version}")
+        
+        # Check for version conflicts
+        if torch_version.startswith("2.7"):
+            logger.warning("PyTorch 2.7.x detected - this may cause flash attention conflicts. Recommended: torch==2.6.0")
+        
+        # Check torchvision
+        import torchvision
+        logger.info(f"Torchvision version: {torchvision.__version__}")
+        
+    except ImportError as e:
+        logger.error(f"PyTorch import failed: {e}")
+        return False
+    
+    # Check transformers version
+    try:
+        import transformers
+        transformers_version = transformers.__version__
+        logger.info(f"Transformers version: {transformers_version}")
+        
+        # Check if it's from git (unstable)
+        if "dev" in transformers_version or "git" in transformers_version:
+            logger.warning("Git version of transformers detected - this may be unstable. Consider using transformers==4.46.3")
+            
+    except ImportError as e:
+        logger.error(f"Transformers import failed: {e}")
+        return False
+    
+    # Check flash attention status
+    try:
+        import importlib.util
+        if importlib.util.find_spec("flash_attn"):
+            logger.warning("Flash attention detected - disabled globally to prevent symbol conflicts")
+        else:
+            logger.info("Flash attention not installed - this is fine, using eager attention")
+    except Exception as e:
+        logger.debug(f"Flash attention check failed: {e}")
+    
+    logger.info("Environment validation completed")
+    return True
+
+# Validate environment on startup
+validate_environment()
 from dataclasses import dataclass
 import torch
 import re
