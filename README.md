@@ -2,8 +2,8 @@
  A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen2.5-VL-7B-Captioner-Relaxed), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 <p align="center">
-  <img src="images/Vision-Toolkit_DarkMode_2025-03-05.jpg" width="49%" alt="Vision Toolkit Dark Mode">
-  <img src="images/Vision-Toolkit_LightMode_2025-03-05.jpg" width="49%" alt="Vision Toolkit Light Mode">
+  <img src="images/multi-vision-toolkit-update-1.jpg" width="49%" alt="Vision Toolkit Dark Mode">
+  <img src="images/multi-vision-toolkit-update-2.jpg" width="49%" alt="Vision Toolkit Light Mode">
 </p>
 
 ## 🚀 Key Features
