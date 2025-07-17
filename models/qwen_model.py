@@ -28,7 +28,7 @@ except ImportError:
     Image = None # type: ignore
 
 _QWEN_CLASS_AVAILABLE = False
-AutoModelForImageTextToText = None
+Qwen2_5_VLForConditionalGeneration = None
 AutoProcessor = None
 AutoTokenizer = None # type: ignore
 CLIPModel = None # type: ignore
@@ -37,7 +37,7 @@ process_vision_info_fn = None # type: ignore
 
 def safe_import_transformers():
     """Safely import transformers with flash attention guards."""
-    global _QWEN_CLASS_AVAILABLE, AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
+    global _QWEN_CLASS_AVAILABLE, Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer
     
     try:
         # Check for flash attention conflicts before importing
@@ -45,9 +45,9 @@ def safe_import_transformers():
         if importlib.util.find_spec("flash_attn"):
             logger.warning("Flash attention detected - may cause symbol conflicts, proceeding with caution")
         
-        from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
+        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer
         _QWEN_CLASS_AVAILABLE = True
-        logger.info("Successfully imported AutoModelForImageTextToText, AutoProcessor, AutoTokenizer.")
+        logger.info("Successfully imported Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer.")
         return True
         
     except ImportError as e:
@@ -59,7 +59,7 @@ def safe_import_transformers():
             os.environ["USE_FLASH_ATTENTION"] = "0"
             os.environ["FLASH_ATTN_DISABLE"] = "1"
             try:
-                from transformers import AutoModelForImageTextToText, AutoProcessor, AutoTokenizer
+                from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, AutoTokenizer
                 _QWEN_CLASS_AVAILABLE = True
                 logger.info("Successfully imported transformers without flash attention.")
                 return True
@@ -69,6 +69,8 @@ def safe_import_transformers():
                 return False
         else:
             logger.error(f"Failed to import Qwen classes from transformers: {e}")
+            logger.error("This may indicate the transformers version doesn't support Qwen2_5_VLForConditionalGeneration")
+            logger.error("Please update transformers: pip install git+https://github.com/huggingface/transformers.git")
             _QWEN_CLASS_AVAILABLE = False
             return False
             
@@ -220,7 +222,7 @@ class QwenModel(BaseVisionModel):
             try:
                 importlib.import_module(package)
                 if package == 'transformers' and not _QWEN_CLASS_AVAILABLE:
-                    missing_packages.append((package, f"{pip_name} (AutoModelForImageTextToText class not found. Ensure latest git version.)"))
+                    missing_packages.append((package, f"{pip_name} (Qwen2_5_VLForConditionalGeneration class not found. Ensure latest git version.)"))
             except ImportError:
                 missing_packages.append((package, pip_name))
         
@@ -472,7 +474,7 @@ class QwenCaptioner(BaseVisionModel):
             try:
                 importlib.import_module(package)
                 if package == 'transformers' and not _QWEN_CLASS_AVAILABLE:
-                    missing_packages.append((package, f"{pip_name} (AutoModelForImageTextToText class not found. Ensure latest git version.)"))
+                    missing_packages.append((package, f"{pip_name} (Qwen2_5_VLForConditionalGeneration class not found. Ensure latest git version.)"))
             except ImportError:
                 missing_packages.append((package, pip_name))
         
@@ -518,9 +520,9 @@ class QwenCaptioner(BaseVisionModel):
     def _setup_model(self) -> None:
         self._using_fallback = False
         try:
-            if not _QWEN_CLASS_AVAILABLE or AutoModelForImageTextToText is None:
-                logger.error("AutoModelForImageTextToText class not available. Falling back.")
-                self._load_clip_as_fallback(reason="AutoModelForImageTextToText class not found.")
+            if not _QWEN_CLASS_AVAILABLE or Qwen2_5_VLForConditionalGeneration is None:
+                logger.error("Qwen2_5_VLForConditionalGeneration class not available. Falling back.")
+                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found.")
                 return
 
             
@@ -545,7 +547,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.info("Flash Attention disabled to prevent symbol conflicts - using eager attention for stability")
             model_kwargs["attn_implementation"] = "eager"
             
-            self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
             
             # Patch missing is_causal attribute for vision attention modules
             self._patch_vision_attention_is_causal()
@@ -567,9 +569,9 @@ class QwenCaptioner(BaseVisionModel):
         """Setup method specifically for QwenCaptioner with quantization support."""
         self._using_fallback = False
         try:
-            if not _QWEN_CLASS_AVAILABLE or AutoModelForImageTextToText is None:
-                logger.error("AutoModelForImageTextToText class not available. Falling back.")
-                self._load_clip_as_fallback(reason="AutoModelForImageTextToText class not found.")
+            if not _QWEN_CLASS_AVAILABLE or Qwen2_5_VLForConditionalGeneration is None:
+                logger.error("Qwen2_5_VLForConditionalGeneration class not available. Falling back.")
+                self._load_clip_as_fallback(reason="Qwen2_5_VLForConditionalGeneration class not found.")
                 return
 
             
@@ -658,7 +660,7 @@ class QwenCaptioner(BaseVisionModel):
             model_kwargs["attn_implementation"] = "eager"
             logger.info("Using eager attention for stability and compatibility (flash attention disabled)")
             
-            self.model = AutoModelForImageTextToText.from_pretrained(self.model_path, **model_kwargs)
+            self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(self.model_path, **model_kwargs)
             
             # Patch missing is_causal attribute for vision attention modules
             self._patch_vision_attention_is_causal()
@@ -1129,6 +1131,6 @@ class QwenCaptioner(BaseVisionModel):
     @classmethod
     def is_available(cls) -> bool:
         if not _QWEN_CLASS_AVAILABLE:
-            logger.warning("AutoModelForImageTextToText class not found. Qwen model not available.")
+            logger.warning("Qwen2_5_VLForConditionalGeneration class not found. Qwen model not available.")
             return False
         return True

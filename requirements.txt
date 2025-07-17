@@ -3,10 +3,10 @@ torch==2.6.0
 torchvision==0.21.0
 # torchaudio==2.6.0  # Only include if actually needed
 
-# Transformers - use stable version that supports Qwen2.5-VL
-transformers==4.46.3  # Latest stable with Qwen2.5-VL support
-# Alternative if 4.46.3 doesn't work:
-# transformers==4.45.2
+# Transformers - use git version that supports Qwen2.5-VL
+git+https://github.com/huggingface/transformers.git  # Latest with Qwen2.5-VL support
+# Alternative if git version doesn't work:
+# transformers==4.46.3
 
 # Core dependencies
 Pillow>=10.0.0
