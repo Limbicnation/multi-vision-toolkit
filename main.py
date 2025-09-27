@@ -1253,11 +1253,16 @@ class ReviewGUI:
             # Initialize prompt generator
             try:
                 from models.prompt_generator import PromptGenerator
-                self.prompt_generator = PromptGenerator()
-                logger.info("Prompt generator initialized successfully")
-            except Exception as e:
-                logger.error(f"Failed to initialize prompt generator: {e}")
+            except ImportError as ie:
+                logger.error(f"Failed to import PromptGenerator: {ie}")
                 self.prompt_generator = None
+            else:
+                try:
+                    self.prompt_generator = PromptGenerator()
+                    logger.info("Prompt generator initialized successfully")
+                except Exception as e:
+                    logger.error(f"Failed to initialize prompt generator: {e}")
+                    self.prompt_generator = None
 
         except Exception as e:
             logger.error(f"Error setting up prompt frame: {e}")
