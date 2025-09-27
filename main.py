@@ -1209,8 +1209,7 @@ class ReviewGUI:
                 padx=10,
                 pady=10,
                 relief=tk.FLAT,
-                borderwidth=1,
-                bg="#f8f8f8"
+                borderwidth=1
             )
             self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
@@ -1253,8 +1252,8 @@ class ReviewGUI:
             # Initialize prompt generator
             try:
                 from models.prompt_generator import PromptGenerator
-            except ImportError as ie:
-                logger.error(f"Failed to import PromptGenerator: {ie}")
+            except ImportError as e:
+                logger.error(f"Failed to import PromptGenerator: {e}")
                 self.prompt_generator = None
             else:
                 try:
@@ -1390,6 +1389,22 @@ class ReviewGUI:
             if hasattr(self, 'status_label'):
                 self.status_label.config(text="Error generating prompts")
 
+    def _auto_generate_prompts_if_enabled(self, description: str = None):
+        """Auto-generate prompts if conditions are met."""
+        # Check if auto-generation is enabled and prompts are visible
+        if not (hasattr(self, 'auto_generate_var') and self.auto_generate_var.get() and
+                hasattr(self, 'prompt_expanded') and self.prompt_expanded.get()):
+            return
+
+        # Check for error condition if description is provided
+        if description is not None and description.startswith("Error:"):
+            return
+
+        try:
+            self._generate_sample_prompts()
+        except Exception as prompt_error:
+            logger.warning(f"Error auto-generating prompts: {prompt_error}")
+
     def _update_prompt_display(self, text: str):
         """Update the prompt display text widget."""
         try:
@@ -1431,7 +1446,6 @@ class ReviewGUI:
                 return
 
             # Open file dialog
-            from tkinter import filedialog
             filename = filedialog.asksaveasfilename(
                 defaultextension=".txt",
                 filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
@@ -1734,12 +1748,7 @@ class ReviewGUI:
             self._update_caption_files(img_path, description, clean_caption)
 
             # Auto-generate prompts if enabled and prompts are visible
-            if (hasattr(self, 'auto_generate_var') and self.auto_generate_var.get() and
-                hasattr(self, 'prompt_expanded') and self.prompt_expanded.get()):
-                try:
-                    self._generate_sample_prompts()
-                except Exception as prompt_error:
-                    logger.warning(f"Error auto-generating prompts: {prompt_error}")
+            self._auto_generate_prompts_if_enabled()
 
             self.status_label.config(text=f"Caption regenerated with {quality} quality")
         except Exception as e:
@@ -1951,13 +1960,7 @@ class ReviewGUI:
                  self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
 
             # Auto-generate prompts if enabled and prompts are visible
-            if (hasattr(self, 'auto_generate_var') and self.auto_generate_var.get() and
-                hasattr(self, 'prompt_expanded') and self.prompt_expanded.get() and
-                not description.startswith("Error:")):
-                try:
-                    self._generate_sample_prompts()
-                except Exception as prompt_error:
-                    logger.warning(f"Error auto-generating prompts: {prompt_error}")
+            self._auto_generate_prompts_if_enabled(description)
 
             self._preload_next_images()
             
@@ -2344,6 +2347,9 @@ class ReviewGUI:
         # Setup progress tracking
         total = len(items_to_process)
         processed = [0]  # Use list for mutable reference in threads
+
+        # Initialize batch summary for prompt generation
+        self.batch_prompt_summary = []
         
         # Create a progress dialog
         progress_window = tk.Toplevel(self.root)
@@ -2426,7 +2432,7 @@ class ReviewGUI:
                                     self._generate_and_save_batch_prompts(
                                         img_path,
                                         description,
-                                        getattr(self, 'trigger_word_var', None) and self.trigger_word_var.get().strip()
+                                        self.trigger_word_var.get().strip() if hasattr(self, 'trigger_word_var') and hasattr(self.trigger_word_var, 'get') else None
                                     )
                                 except Exception as prompt_error:
                                     logger.warning(f"Failed to generate prompts for {img_path}: {prompt_error}")
@@ -2479,7 +2485,7 @@ class ReviewGUI:
                                     self._generate_and_save_batch_prompts(
                                         original_item_img_path,
                                         description,
-                                        getattr(self, 'trigger_word_var', None) and self.trigger_word_var.get().strip()
+                                        self.trigger_word_var.get().strip() if hasattr(self, 'trigger_word_var') and hasattr(self.trigger_word_var, 'get') else None
                                     )
                                 except Exception as prompt_error:
                                     logger.warning(f"Failed to generate prompts for {original_item_img_path}: {prompt_error}")
@@ -2513,9 +2519,6 @@ class ReviewGUI:
                     # Generate batch summary report if prompts were generated
                     if self.batch_generate_prompts.get():
                         self._create_batch_summary_report()
-        
-        # Initialize batch summary for prompt generation
-        self.batch_prompt_summary = []
 
         # Start worker threads (use number of CPU cores or max 4)
         # For batching, a single worker thread might be better to avoid overwhelming the GPU
