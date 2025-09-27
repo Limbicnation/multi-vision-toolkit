@@ -998,7 +998,10 @@ class ReviewGUI:
         ttk.Label(info_grid, text="Model:", width=12, anchor=tk.E).grid(row=2, column=0, sticky=tk.W, padx=5, pady=2)
         self.model_label = ttk.Label(info_grid, text=self.model_name)
         self.model_label.grid(row=2, column=1, sticky=tk.W, padx=5, pady=2)
-        
+
+        # Sample Prompt Display Window
+        self._setup_prompt_frame(analysis_frame)
+
         # Control buttons
         controls_frame = ttk.Frame(analysis_frame)
         controls_frame.pack(fill=tk.X, padx=5, pady=10)
@@ -1067,7 +1070,16 @@ class ReviewGUI:
         # Batch processing controls
         batch_frame = ttk.Frame(toolbar_frame)
         batch_frame.pack(side=tk.RIGHT, padx=10)
-        
+
+        # Batch prompt generation option
+        self.batch_generate_prompts = tk.BooleanVar(value=False)
+        batch_prompts_check = ttk.Checkbutton(
+            batch_frame,
+            text="Generate prompts",
+            variable=self.batch_generate_prompts
+        )
+        batch_prompts_check.pack(side=tk.LEFT, padx=5)
+
         batch_btn = ttk.Button(
             batch_frame,
             text="Batch Process",
@@ -1153,7 +1165,103 @@ class ReviewGUI:
         if HAS_DND:
             self.root.drop_target_register(DND_FILES)
             self.root.dnd_bind('<<Drop>>', self._handle_file_drop)
-    
+
+    def _setup_prompt_frame(self, parent_frame):
+        """Setup the sample prompt display window."""
+        try:
+            # Create collapsible prompt frame
+            prompt_main_frame = ttk.Frame(parent_frame, style="InfoFrame.TFrame")
+            prompt_main_frame.pack(fill=tk.BOTH, expand=False, padx=5, pady=5)
+
+            # Header with toggle button
+            prompt_header_frame = ttk.Frame(prompt_main_frame)
+            prompt_header_frame.pack(fill=tk.X, padx=5, pady=2)
+
+            # Toggle button for collapsible behavior
+            self.prompt_expanded = tk.BooleanVar(value=False)
+            self.prompt_toggle_btn = ttk.Button(
+                prompt_header_frame,
+                text="▶ Sample Prompts",
+                command=self._toggle_prompt_display
+            )
+            self.prompt_toggle_btn.pack(side=tk.LEFT, padx=5)
+
+            # Auto-generation toggle
+            self.auto_generate_var = tk.BooleanVar(value=True)
+            auto_gen_check = ttk.Checkbutton(
+                prompt_header_frame,
+                text="Auto-generate",
+                variable=self.auto_generate_var,
+                command=self._on_auto_generate_toggle
+            )
+            auto_gen_check.pack(side=tk.RIGHT, padx=5)
+
+            # Collapsible content frame
+            self.prompt_content_frame = ttk.Frame(prompt_main_frame)
+            # Initially hidden
+
+            # Prompt display text widget
+            self.prompt_text = tk.Text(
+                self.prompt_content_frame,
+                wrap=tk.WORD,
+                height=6,
+                font=("Consolas", 9),
+                padx=10,
+                pady=10,
+                relief=tk.FLAT,
+                borderwidth=1,
+                bg="#f8f8f8"
+            )
+            self.prompt_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+            # Prompt control buttons
+            prompt_btn_frame = ttk.Frame(self.prompt_content_frame)
+            prompt_btn_frame.pack(fill=tk.X, padx=5, pady=5)
+
+            # Generate button
+            generate_btn = ttk.Button(
+                prompt_btn_frame,
+                text="Generate Prompts",
+                command=self._generate_sample_prompts
+            )
+            generate_btn.pack(side=tk.LEFT, padx=2)
+
+            # Copy button
+            copy_btn = ttk.Button(
+                prompt_btn_frame,
+                text="Copy",
+                command=self._copy_prompt_to_clipboard
+            )
+            copy_btn.pack(side=tk.LEFT, padx=2)
+
+            # Save button
+            save_btn = ttk.Button(
+                prompt_btn_frame,
+                text="Save",
+                command=self._save_prompts_to_file
+            )
+            save_btn.pack(side=tk.LEFT, padx=2)
+
+            # Clear button
+            clear_btn = ttk.Button(
+                prompt_btn_frame,
+                text="Clear",
+                command=self._clear_prompts
+            )
+            clear_btn.pack(side=tk.RIGHT, padx=2)
+
+            # Initialize prompt generator
+            try:
+                from models.prompt_generator import PromptGenerator
+                self.prompt_generator = PromptGenerator()
+                logger.info("Prompt generator initialized successfully")
+            except Exception as e:
+                logger.error(f"Failed to initialize prompt generator: {e}")
+                self.prompt_generator = None
+
+        except Exception as e:
+            logger.error(f"Error setting up prompt frame: {e}")
+
     def _toggle_theme(self):
         """Toggle between light and dark theme"""
         new_theme = self.theme_manager.toggle_theme()
@@ -1185,11 +1293,172 @@ class ReviewGUI:
         """Show the next image"""
         if not hasattr(self, 'items') or not self.items:
             return
-            
+
         if self.current < len(self.items) - 1:
             self.current += 1
             self.show_current()
             self.status_label.config(text="Next image")
+
+    def _toggle_prompt_display(self):
+        """Toggle the visibility of the prompt display frame."""
+        try:
+            if self.prompt_expanded.get():
+                # Hide the prompt frame
+                self.prompt_content_frame.pack_forget()
+                self.prompt_toggle_btn.config(text="▶ Sample Prompts")
+                self.prompt_expanded.set(False)
+            else:
+                # Show the prompt frame
+                self.prompt_content_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+                self.prompt_toggle_btn.config(text="▼ Sample Prompts")
+                self.prompt_expanded.set(True)
+
+                # Auto-generate prompts if enabled and we have content
+                if (self.auto_generate_var.get() and hasattr(self, 'caption_text') and
+                    self.caption_text.get(1.0, tk.END).strip()):
+                    self._generate_sample_prompts()
+
+        except Exception as e:
+            logger.error(f"Error toggling prompt display: {e}")
+
+    def _on_auto_generate_toggle(self):
+        """Handle auto-generate toggle changes."""
+        try:
+            if self.auto_generate_var.get():
+                # If auto-generate is enabled and prompts are visible, generate them
+                if (self.prompt_expanded.get() and hasattr(self, 'caption_text') and
+                    self.caption_text.get(1.0, tk.END).strip()):
+                    self._generate_sample_prompts()
+            else:
+                # Optionally clear prompts when auto-generate is disabled
+                pass
+
+        except Exception as e:
+            logger.error(f"Error handling auto-generate toggle: {e}")
+
+    def _generate_sample_prompts(self):
+        """Generate sample prompts based on current image analysis."""
+        try:
+            if not hasattr(self, 'prompt_generator') or self.prompt_generator is None:
+                self._update_prompt_display("Prompt generator not available.")
+                return
+
+            if not hasattr(self, 'caption_text'):
+                self._update_prompt_display("No image analysis available.")
+                return
+
+            # Get current caption/analysis text
+            caption = self.caption_text.get(1.0, tk.END).strip()
+            if not caption:
+                self._update_prompt_display("No analysis text available to generate prompts from.")
+                return
+
+            # Get trigger word if available
+            trigger_word = None
+            if hasattr(self, 'trigger_word_var') and self.trigger_word_var.get().strip():
+                trigger_word = self.trigger_word_var.get().strip()
+
+            # Update status
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text="Generating sample prompts...")
+
+            # Generate prompt variations
+            variations = self.prompt_generator.generate_variations(
+                caption=caption,
+                count=3,
+                trigger_word=trigger_word
+            )
+
+            # Format and display the results
+            if variations:
+                formatted_output = self.prompt_generator.format_for_display(variations)
+                self._update_prompt_display(formatted_output)
+
+                if hasattr(self, 'status_label'):
+                    self.status_label.config(text=f"Generated {len(variations)} sample prompts")
+            else:
+                self._update_prompt_display("No prompts could be generated from the current analysis.")
+
+        except Exception as e:
+            logger.error(f"Error generating sample prompts: {e}")
+            self._update_prompt_display(f"Error generating prompts: {str(e)}")
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text="Error generating prompts")
+
+    def _update_prompt_display(self, text: str):
+        """Update the prompt display text widget."""
+        try:
+            if hasattr(self, 'prompt_text'):
+                self.prompt_text.config(state=tk.NORMAL)
+                self.prompt_text.delete(1.0, tk.END)
+                self.prompt_text.insert(tk.END, text)
+                self.prompt_text.config(state=tk.NORMAL)  # Keep editable
+        except Exception as e:
+            logger.error(f"Error updating prompt display: {e}")
+
+    def _copy_prompt_to_clipboard(self):
+        """Copy the current prompts to clipboard."""
+        try:
+            if hasattr(self, 'prompt_text'):
+                content = self.prompt_text.get(1.0, tk.END).strip()
+                if content:
+                    self.root.clipboard_clear()
+                    self.root.clipboard_append(content)
+                    if hasattr(self, 'status_label'):
+                        self.status_label.config(text="Prompts copied to clipboard")
+                else:
+                    if hasattr(self, 'status_label'):
+                        self.status_label.config(text="No prompts to copy")
+        except Exception as e:
+            logger.error(f"Error copying to clipboard: {e}")
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text="Error copying to clipboard")
+
+    def _save_prompts_to_file(self):
+        """Save the current prompts to a file."""
+        try:
+            if not hasattr(self, 'prompt_text'):
+                return
+
+            content = self.prompt_text.get(1.0, tk.END).strip()
+            if not content:
+                if hasattr(self, 'status_label'):
+                    self.status_label.config(text="No prompts to save")
+                return
+
+            # Open file dialog
+            from tkinter import filedialog
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                title="Save Sample Prompts"
+            )
+
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(content)
+
+                if hasattr(self, 'status_label'):
+                    self.status_label.config(text=f"Prompts saved to {filename}")
+                logger.info(f"Prompts saved to: {filename}")
+
+        except Exception as e:
+            logger.error(f"Error saving prompts to file: {e}")
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text="Error saving prompts")
+
+    def _clear_prompts(self):
+        """Clear the prompt display."""
+        try:
+            if hasattr(self, 'prompt_text'):
+                self.prompt_text.config(state=tk.NORMAL)
+                self.prompt_text.delete(1.0, tk.END)
+
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text="Prompts cleared")
+
+        except Exception as e:
+            logger.error(f"Error clearing prompts: {e}")
 
     def _on_model_change(self, event):
         """Handle model switching with error handling and progress indication"""
@@ -1459,7 +1728,15 @@ class ReviewGUI:
             
             # Update JSON and text files
             self._update_caption_files(img_path, description, clean_caption)
-            
+
+            # Auto-generate prompts if enabled and prompts are visible
+            if (hasattr(self, 'auto_generate_var') and self.auto_generate_var.get() and
+                hasattr(self, 'prompt_expanded') and self.prompt_expanded.get()):
+                try:
+                    self._generate_sample_prompts()
+                except Exception as prompt_error:
+                    logger.warning(f"Error auto-generating prompts: {prompt_error}")
+
             self.status_label.config(text=f"Caption regenerated with {quality} quality")
         except Exception as e:
             logger.error(f"Error regenerating caption: {str(e)}")
@@ -1668,7 +1945,16 @@ class ReviewGUI:
             
             if not description.startswith("Error:"):
                  self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
-            
+
+            # Auto-generate prompts if enabled and prompts are visible
+            if (hasattr(self, 'auto_generate_var') and self.auto_generate_var.get() and
+                hasattr(self, 'prompt_expanded') and self.prompt_expanded.get() and
+                not description.startswith("Error:")):
+                try:
+                    self._generate_sample_prompts()
+                except Exception as prompt_error:
+                    logger.warning(f"Error auto-generating prompts: {prompt_error}")
+
             self._preload_next_images()
             
         except Exception as e: # Catch-all for show_current method
@@ -2025,11 +2311,16 @@ class ReviewGUI:
             messagebox.showinfo("Batch Process", "No images to process.")
             return
             
-        confirm = messagebox.askyesno(
-            "Batch Process",
-            f"Do you want to batch process all {len(self.items)} images?\n\n"
-            f"This will analyze all images with the current model ({self.model_name})."
-        )
+        # Build confirmation message based on options
+        message = f"Do you want to batch process all {len(self.items)} images?\n\n"
+        message += f"This will analyze all images with the current model ({self.model_name})."
+
+        if self.batch_generate_prompts.get():
+            message += "\n\n✅ Sample prompts will be generated for AI training"
+        else:
+            message += "\n\n⚠️ Only captions will be generated (no training prompts)"
+
+        confirm = messagebox.askyesno("Batch Process", message)
         
         if not confirm:
             return
@@ -2124,6 +2415,18 @@ class ReviewGUI:
                                 clean_caption = f"{self.trigger_word}, {clean_caption}"
                             if clean_caption:
                                 self.dataset_prep.create_caption_file(str(img_path), clean_caption)
+
+                            # Generate prompts for cached results if enabled
+                            if self.batch_generate_prompts.get() and not description.startswith("Error:"):
+                                try:
+                                    self._generate_and_save_batch_prompts(
+                                        img_path,
+                                        description,
+                                        getattr(self, 'trigger_word_var', None) and self.trigger_word_var.get().strip()
+                                    )
+                                except Exception as prompt_error:
+                                    logger.warning(f"Failed to generate prompts for {img_path}: {prompt_error}")
+
                             processed[0] += 1 # Count as processed
                         else:
                             items_needing_analysis.append(current_batch_items[item_idx])
@@ -2165,6 +2468,18 @@ class ReviewGUI:
                             
                             if clean_caption:
                                 self.dataset_prep.create_caption_file(str(original_item_img_path), clean_caption)
+
+                            # Generate prompts if enabled
+                            if self.batch_generate_prompts.get() and not description.startswith("Error:"):
+                                try:
+                                    self._generate_and_save_batch_prompts(
+                                        original_item_img_path,
+                                        description,
+                                        getattr(self, 'trigger_word_var', None) and self.trigger_word_var.get().strip()
+                                    )
+                                except Exception as prompt_error:
+                                    logger.warning(f"Failed to generate prompts for {original_item_img_path}: {prompt_error}")
+
                             processed[0] += 1 # Count as processed
                     
                     # Update overall progress bar
@@ -2191,18 +2506,125 @@ class ReviewGUI:
                     self.status_label.config(text=f"Batch processing canceled. {processed[0]}/{total} completed.")
                 else:
                     self.status_label.config(text=f"Batch processing complete. {processed[0]}/{total} images processed.")
+                    # Generate batch summary report if prompts were generated
+                    if self.batch_generate_prompts.get():
+                        self._create_batch_summary_report()
         
+        # Initialize batch summary for prompt generation
+        self.batch_prompt_summary = []
+
         # Start worker threads (use number of CPU cores or max 4)
         # For batching, a single worker thread might be better to avoid overwhelming the GPU
         # if the model's batch method is efficient. If model.analyze_images_batch is internally parallel,
         # then multiple workers here could lead to contention.
         # Let's stick to one worker for now, assuming the model's batch method handles parallelism.
-        # num_workers = min(multiprocessing.cpu_count(), 4) 
+        # num_workers = min(multiprocessing.cpu_count(), 4)
         num_workers = 1 # Using a single worker for batch processing
         logger.info(f"Starting {num_workers} worker thread(s) for batch processing.")
         for _ in range(num_workers):
             threading.Thread(target=worker, daemon=True).start()
     
+    def _generate_and_save_batch_prompts(self, img_path, description: str, trigger_word: Optional[str]):
+        """Generate and save prompts for a single image during batch processing."""
+        try:
+            if not hasattr(self, 'prompt_generator') or self.prompt_generator is None:
+                return
+
+            # Generate prompt variations
+            variations = self.prompt_generator.generate_variations(
+                caption=description,
+                count=4,
+                trigger_word=trigger_word
+            )
+
+            if variations:
+                # Format prompts for file output
+                formatted_output = self.prompt_generator.format_for_display(variations)
+
+                # Save to individual prompt file
+                prompt_file_path = img_path.with_suffix('.prompts.txt')
+                with open(prompt_file_path, 'w', encoding='utf-8') as f:
+                    f.write(formatted_output)
+
+                # Add to batch summary
+                self.batch_prompt_summary.append({
+                    'image_name': img_path.name,
+                    'prompts': variations,
+                    'formatted_output': formatted_output
+                })
+
+                logger.debug(f"Generated prompts saved to: {prompt_file_path}")
+
+        except Exception as e:
+            logger.error(f"Error generating batch prompts for {img_path}: {e}")
+
+    def _create_batch_summary_report(self):
+        """Create a comprehensive batch summary report with all generated prompts."""
+        try:
+            if not self.batch_prompt_summary:
+                return
+
+            # Create summary file path
+            summary_path = self.review_dir / "batch_prompts_summary.txt"
+
+            # Generate comprehensive report
+            with open(summary_path, 'w', encoding='utf-8') as f:
+                f.write("="*80 + "\n")
+                f.write("BATCH PROCESSING SUMMARY - AI TRAINING PROMPTS\n")
+                f.write("="*80 + "\n")
+                f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Total Images: {len(self.batch_prompt_summary)}\n")
+                f.write(f"Model Used: {self.model_name}\n")
+                f.write("="*80 + "\n\n")
+
+                # Calculate statistics
+                total_variations = sum(len(item['prompts']) for item in self.batch_prompt_summary)
+                avg_confidence = sum(
+                    sum(p.confidence for p in item['prompts'])
+                    for item in self.batch_prompt_summary
+                ) / total_variations if total_variations > 0 else 0
+
+                f.write("📊 BATCH STATISTICS:\n")
+                f.write(f"• Total prompt variations: {total_variations}\n")
+                f.write(f"• Average confidence: {avg_confidence:.1%}\n")
+                f.write(f"• Prompts per image: {total_variations // len(self.batch_prompt_summary) if self.batch_prompt_summary else 0}\n")
+                f.write("\n" + "="*80 + "\n\n")
+
+                # Write all prompts organized by image
+                for item in self.batch_prompt_summary:
+                    f.write(f"🖼️  IMAGE: {item['image_name']}\n")
+                    f.write("-" * 60 + "\n")
+                    f.write(item['formatted_output'])
+                    f.write("\n" + "="*80 + "\n\n")
+
+                # Add copy-paste ready section
+                f.write("📋 COPY-PASTE READY PROMPTS\n")
+                f.write("="*80 + "\n")
+                f.write("Copy these prompts directly into your AI training dataset:\n\n")
+
+                for item in self.batch_prompt_summary:
+                    best_prompt = max(item['prompts'], key=lambda p: p.confidence)
+                    f.write(f"# {item['image_name']}\n")
+                    f.write(f"{best_prompt.prompt}\n")
+                    if best_prompt.negative_prompt:
+                        f.write(f"Negative: {best_prompt.negative_prompt}\n")
+                    f.write("\n")
+
+            logger.info(f"Batch summary report created: {summary_path}")
+
+            # Show completion message
+            self.root.after(1000, lambda: messagebox.showinfo(
+                "Batch Processing Complete",
+                f"✅ Batch processing completed!\n\n"
+                f"📊 {len(self.batch_prompt_summary)} images processed\n"
+                f"📝 Prompts saved to individual .prompts.txt files\n"
+                f"📋 Summary report: {summary_path.name}\n\n"
+                f"All files are ready for AI training workflows!"
+            ))
+
+        except Exception as e:
+            logger.error(f"Error creating batch summary report: {e}")
+
     def _cache_get(self, key: str) -> Optional[Tuple[str, str]]:
         """Thread-safe cache get operation"""
         with self.cache_lock:

@@ -2,7 +2,7 @@
  A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen2.5-VL-7B-Captioner-Relaxed), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 <p align="center">
-  <img src="images/multi-vision-toolkit-update-2.jpg" width="100%" alt="Vision Toolkit Light Mode">
+  <img src="images/mvtk-feature-image.jpg" width="100%" alt="Multi-Vision Toolkit with Prompt Generation UI">
 </p>
 
 ## 🚀 Key Features
@@ -17,6 +17,23 @@
 - **Export Functionality**: Export analysis results to CSV or JSON formats
 - **Image Caching**: Faster navigation with preloading and caching of image analyses
 - **Auto-download Models**: Models are automatically downloaded when needed and cached for future use
+- **Automated Sample Prompt Generation**: AI training prompts optimized for LoRA and Stable Diffusion workflows
+- **AI Training Workflow Integration**: Advanced parsing extracts subjects, attributes, environments, and technical elements
+- **Template System**: Customizable prompt templates for different AI training formats
+
+## 🆕 Latest Features
+
+### Automated Sample Prompt Generation
+- **AI Training Prompts**: Automatically generate high-quality training prompts optimized for AI-Toolkit, LoRA training, and Stable Diffusion
+- **Multiple Format Support**: Generate prompts in different styles (Simple, Detailed, Technical, Artistic) with negative prompts
+- **Batch Processing Integration**: Option to generate training prompts during batch processing operations
+- **Smart Element Extraction**: Advanced parsing extracts subjects, attributes, environments, and technical elements from image analysis
+
+### Enhanced Batch Processing
+- **Dual-mode Operation**: Process images for captions only or include AI training prompt generation
+- **Comprehensive Reports**: Automated batch summary reports with statistics and copy-paste ready prompts
+- **File Organization**: Separate `.txt` files for captions and `.prompts.txt` files for training data
+- **Quality Validation**: Confidence scoring and fallback handling for consistent output quality
 
 ## 🛠️ Installation
 
@@ -61,7 +78,24 @@ python main.py --review_dir data/review --trigger_word "your_trigger"
 
 # Use Florence-2 model variant
 python main.py --review_dir data/review --model florence2 --variant large  # or --variant base
+
+# Generate AI training prompts during batch processing
+python main.py --review_dir data/review --generate_prompts
+
+# Generate only AI training prompts (no regular captions)
+python main.py --review_dir data/review --prompt_only
 ```
+
+### Sample Prompt Generation
+1. **Individual Images**:
+   - Click "▶ Sample Prompts" to expand the prompt panel
+   - Enable "Auto-generate" for automatic prompt creation
+   - Use Generate/Copy/Save buttons for prompt management
+
+2. **Batch Processing**:
+   - Check "Generate prompts" before running batch process
+   - Prompts saved to `[image_name].prompts.txt` files
+   - Comprehensive summary report generated automatically
 
 ## 💻 GUI Features
 
@@ -75,6 +109,10 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 - **Batch Processing**: Process multiple images simultaneously with a progress indicator
 - **Export Options**: Export results as CSV or JSON for external use
 - **Quick Navigation**: Fast browsing with image caching and preloading
+- **Sample Prompt Panel**: Collapsible UI panel for generating AI training prompts
+- **Auto-generation Toggle**: Enable automatic prompt generation with quality controls
+- **Copy/Save Functionality**: One-click copying and saving of generated prompts
+- **Batch Prompt Generation**: Option to include prompt generation in batch workflows
 
 ## 📝 Technical Details
 
@@ -86,12 +124,23 @@ python main.py --review_dir data/review --model florence2 --variant large  # or 
 
 | Model | Capabilities | VRAM Requirements | Fallback |
 |-------|-------------|-------------------|----------|
-| Florence-2 (large) | Captioning, object detection, OCR, VQA | 8GB+ | Base model |
+| Florence-2 (large) | Captioning, object detection, OCR, VQA, prompt generation | 8GB+ | Base model |
 | Florence-2 (base) | Same as large with lower accuracy | 4-8GB | Dummy model |
-| Janus-Pro-1B | Advanced multimodal understanding and captioning | 4GB+ | Dummy model |
-| Qwen2.5-VL-3B-Instruct | High-quality captioning, optimized for performance | 6GB+ (with 8-bit quantization) | CLIP model |
+| Janus-Pro-1B | Advanced multimodal understanding and captioning, prompt generation | 4GB+ | Dummy model |
+| Qwen2.5-VL-3B-Instruct | High-quality captioning and prompt generation, optimized for performance | 6GB+ (with 8-bit quantization) | CLIP model |
+
+### Enhanced Dependencies
+The prompt generation system includes advanced text processing and template management:
+- Natural language processing for element extraction
+- Template-based prompt construction
+- Quality validation and confidence scoring
 
 Each model has a fallback mechanism if the primary model fails to load. The Qwen model uses local files by default and will fall back to a CLIP-based implementation if it encounters issues. All models use memory-optimized sequential processing to prevent out-of-memory errors on GPUs with limited VRAM.
+
+### Output Files
+- `image_name.txt` - Image captions for dataset preparation
+- `image_name.prompts.txt` - AI training prompts (when enabled)
+- `batch_prompts_summary.txt` - Consolidated training prompt report
 
 ## 🔧 Troubleshooting
 
