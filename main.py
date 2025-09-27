@@ -1253,14 +1253,14 @@ class ReviewGUI:
             try:
                 from models.prompt_generator import PromptGenerator
             except ImportError as e:
-                logger.error(f"Failed to import PromptGenerator: {e}")
+                logger.error(f"Failed to import PromptGenerator: {e}. Prompt generation features will be disabled.")
                 self.prompt_generator = None
             else:
                 try:
                     self.prompt_generator = PromptGenerator()
                     logger.info("Prompt generator initialized successfully")
                 except Exception as e:
-                    logger.error(f"Failed to initialize prompt generator: {e}")
+                    logger.error(f"Failed to initialize prompt generator: {e}. Prompt generation features will be disabled.")
                     self.prompt_generator = None
 
         except Exception as e:
