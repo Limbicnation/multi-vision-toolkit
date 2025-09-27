@@ -1412,6 +1412,7 @@ class ReviewGUI:
                 self.prompt_text.config(state=tk.NORMAL)
                 self.prompt_text.delete(1.0, tk.END)
                 self.prompt_text.insert(tk.END, text)
+                self.prompt_text.config(state=tk.DISABLED)
         except Exception as e:
             logger.error(f"Error updating prompt display: {e}")
 
