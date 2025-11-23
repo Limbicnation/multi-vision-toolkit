@@ -163,7 +163,6 @@ class Qwen3Model(BaseVisionModel):
             else: # standard
                 gen_kwargs.update({
                     "do_sample": False, # Greedy for standard/concise
-                    "temperature": 0.1, # Low temp if sampling forced
                 })
 
             with torch.inference_mode():
