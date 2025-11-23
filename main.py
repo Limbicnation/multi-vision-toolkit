@@ -306,13 +306,13 @@ try:
     logger.info("Attempting to import Qwen3Model...")
     from models.qwen3_model import Qwen3Model
     logger.info("Successfully imported Qwen3Model")
-except Exception as e:
+except (ImportError, ModuleNotFoundError) as e:
     logger.error(f"Failed to load qwen3 model: {str(e)}")
     try:
         from models.dummy_qwen3_model import Qwen3Model
         logger.warning("Using dummy Qwen3Model as fallback")
-    except ImportError as e:
-        logger.error(f"Failed to import dummy Qwen3Model: {e}")
+    except ImportError as import_err:
+        logger.error(f"Failed to import dummy Qwen3Model: {import_err}")
         Qwen3Model = None
 
 # Import QwenCaptioner

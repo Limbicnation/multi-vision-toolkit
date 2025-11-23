@@ -8,8 +8,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-# Set PyTorch memory allocation config to avoid fragmentation
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
 class Qwen3Model(BaseVisionModel):
     """Qwen3-VL-4B-Instruct model implementation."""
@@ -37,7 +36,6 @@ class Qwen3Model(BaseVisionModel):
             logger.info(f"Using specified model path: {self.model_path}")
             
         self._check_dependencies()
-        self.tokenizer = None 
         super().__init__()
 
     def _get_model_name(self) -> str:
@@ -81,7 +79,6 @@ class Qwen3Model(BaseVisionModel):
             
             self.model = ModelClass.from_pretrained(self.model_path, **model_kwargs)
             self.processor = AutoProcessor.from_pretrained(self.model_path, trust_remote_code=True)
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
             
             logger.info(f"Successfully loaded Qwen3 model: {self.model_path}")
 
@@ -187,12 +184,128 @@ class Qwen3Model(BaseVisionModel):
     def analyze_images_batch(self, image_paths: List[str], quality: str = "standard",
                             template_name: Optional[str] = None, 
                             template_variables: Optional[Dict[str, Any]] = None) -> List[Tuple[str, Optional[str]]]:
-        """Analyze multiple images in batch."""
-        # Simple sequential implementation for now
-        results = []
-        for path in image_paths:
-            results.append(self.analyze_image(path, quality, template_name, template_variables))
-        return results
+        """
+        Analyze multiple images in batch.
+        
+        Optimized to process images in a single pass for better performance.
+        """
+        if not image_paths:
+            return []
+            
+        try:
+            from PIL import Image
+            
+            # Load all images
+            pil_images = []
+            valid_indices = []
+            results = [("Error: Image load failed", None)] * len(image_paths)
+            
+            for i, path in enumerate(image_paths):
+                if os.path.exists(path):
+                    try:
+                        img = Image.open(path)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        pil_images.append(img)
+                        valid_indices.append(i)
+                    except Exception as e:
+                        results[i] = (f"Error loading image: {e}", None)
+                else:
+                    results[i] = ("Error: Image file not found", None)
+            
+            if not pil_images:
+                return results
+
+            # Prepare prompt
+            if template_name is not None:
+                prompt = self.get_prompt_from_template(quality, template_name, template_variables)
+            else:
+                prompt = self.get_prompt_from_template(quality, f"caption_{quality}", template_variables)
+
+            # Prepare batch messages
+            # Note: Qwen3 processor might handle lists of messages for batching differently depending on version
+            # We'll construct a list of message lists, one per image
+            batch_messages = []
+            for img in pil_images:
+                batch_messages.append([
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ])
+            
+            # Process batch
+            # apply_chat_template typically handles a single conversation. 
+            # For batching, we usually need to use the processor on the text/image inputs directly
+            # or loop apply_chat_template to get texts and then batch tokenize.
+            
+            # Approach: Get text prompts first
+            texts = [
+                self.processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
+                for msg in batch_messages
+            ]
+            
+            # Batch process inputs
+            inputs = self.processor(
+                text=texts,
+                images=pil_images,
+                padding=True,
+                return_tensors="pt",
+            )
+            
+            inputs = inputs.to(self.model.device)
+            
+            # Generation args
+            gen_kwargs = {
+                "max_new_tokens": 512 if quality == "detailed" else 128,
+                "repetition_penalty": 1.0,
+            }
+            
+            if quality == "creative":
+                gen_kwargs.update({
+                    "do_sample": True,
+                    "temperature": 0.7,
+                    "top_p": 0.8,
+                    "top_k": 20,
+                })
+            elif quality == "detailed":
+                gen_kwargs.update({
+                    "do_sample": True,
+                    "temperature": 0.4,
+                    "top_p": 0.8,
+                })
+            else:
+                gen_kwargs.update({
+                    "do_sample": False,
+                })
+
+            with torch.inference_mode():
+                generated_ids = self.model.generate(**inputs, **gen_kwargs)
+                
+            # Decode outputs
+            generated_ids_trimmed = [
+                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            ]
+            
+            output_texts = self.processor.batch_decode(
+                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+            )
+            
+            # Map results back to original indices
+            for idx, text in zip(valid_indices, output_texts):
+                clean_text = self.clean_output(text)
+                results[idx] = (f"Description: {clean_text}\n\nGenerated by: Qwen3-VL-4B-Instruct", clean_text)
+                
+            return results
+
+        except Exception as e:
+            logger.error(f"Error in batch analysis with Qwen3: {e}")
+            # Fallback to sequential if batch fails (e.g. OOM)
+            logger.info("Falling back to sequential processing")
+            return [self.analyze_image(path, quality, template_name, template_variables) for path in image_paths]
 
     @classmethod
     def _check_dependencies(cls) -> None:

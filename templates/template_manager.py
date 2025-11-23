@@ -95,7 +95,7 @@ class TemplateManager:
     
     def _get_fallback_templates(self) -> Dict[str, Any]:
         """Get fallback templates if loading fails."""
-        return {
+        fallback_templates = {
             "florence2": {
                 "caption_standard": "Generate a concise caption for this image{trigger_word}",
                 "caption_detailed": "Provide a detailed description of this image including objects, colors, and composition{trigger_word}",
@@ -113,13 +113,11 @@ class TemplateManager:
                 "caption_standard": "Describe this image concisely{trigger_word}",
                 "caption_detailed": "Provide a detailed analysis of this image, describing all visible elements, their spatial relationships, colors, textures, and any contextual information{trigger_word}",
                 "caption_creative": "Create a creative and engaging description of this image, emphasizing artistic elements, mood, and visual storytelling{trigger_word}"
-            },
-            "qwen3": {
-                "caption_standard": "Describe this image concisely{trigger_word}",
-                "caption_detailed": "Provide a detailed analysis of this image, describing all visible elements, their spatial relationships, colors, textures, and any contextual information{trigger_word}",
-                "caption_creative": "Create a creative and engaging description of this image, emphasizing artistic elements, mood, and visual storytelling{trigger_word}"
             }
         }
+        # Reuse Qwen templates for Qwen3
+        fallback_templates["qwen3"] = fallback_templates["qwen"]
+        return fallback_templates
     
     def get_template(self, model: str, template_name: str) -> Optional[str]:
         """
