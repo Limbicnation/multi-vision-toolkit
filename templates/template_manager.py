@@ -17,8 +17,9 @@ class ModelNames:
     JANUS = "janus" 
     QWEN = "qwen"
     QWEN_LOCAL = "qwen_local"
+    QWEN3 = "qwen3"
 
-VALID_MODEL_NAMES = {ModelNames.FLORENCE2, ModelNames.JANUS, ModelNames.QWEN, ModelNames.QWEN_LOCAL}
+VALID_MODEL_NAMES = {ModelNames.FLORENCE2, ModelNames.JANUS, ModelNames.QWEN, ModelNames.QWEN_LOCAL, ModelNames.QWEN3}
 
 class TemplateManager:
     """Manager for prompt templates across all vision models."""
@@ -109,6 +110,11 @@ class TemplateManager:
                 "caption_creative": "Create an imaginative and evocative description of this image, focusing on mood, atmosphere, and artistic interpretation{trigger_word}"
             },
             "qwen": {
+                "caption_standard": "Describe this image concisely{trigger_word}",
+                "caption_detailed": "Provide a detailed analysis of this image, describing all visible elements, their spatial relationships, colors, textures, and any contextual information{trigger_word}",
+                "caption_creative": "Create a creative and engaging description of this image, emphasizing artistic elements, mood, and visual storytelling{trigger_word}"
+            },
+            "qwen3": {
                 "caption_standard": "Describe this image concisely{trigger_word}",
                 "caption_detailed": "Provide a detailed analysis of this image, describing all visible elements, their spatial relationships, colors, textures, and any contextual information{trigger_word}",
                 "caption_creative": "Create a creative and engaging description of this image, emphasizing artistic elements, mood, and visual storytelling{trigger_word}"
