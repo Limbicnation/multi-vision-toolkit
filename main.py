@@ -218,6 +218,7 @@ else:
 Florence2Model = None
 JanusModel = None
 QwenModel = None
+Qwen3Model = None
 
 try:
     from models.florence_model import Florence2Model
@@ -300,6 +301,19 @@ except Exception as e:
     except ImportError as e:
         logger.error(f"Failed to import dummy QwenModel: {e}")
         QwenModel = None
+
+try:
+    logger.info("Attempting to import Qwen3Model...")
+    from models.qwen3_model import Qwen3Model
+    logger.info("Successfully imported Qwen3Model")
+except (ImportError, ModuleNotFoundError) as e:
+    logger.error(f"Failed to load qwen3 model: {str(e)}")
+    try:
+        from models.dummy_qwen3_model import Qwen3Model
+        logger.warning("Using dummy Qwen3Model as fallback")
+    except ImportError as import_err:
+        logger.error(f"Failed to import dummy Qwen3Model: {import_err}")
+        Qwen3Model = None
 
 # Import QwenCaptioner
 QwenCaptioner = None
@@ -534,6 +548,18 @@ class ModelManager:
                     )
                     model = QwenCaptioner()
                     
+                elif model_name.lower() == "qwen3":
+                    logger.info(f"Qwen3Model class available: {Qwen3Model is not None}")
+                    if Qwen3Model is None:
+                        raise ImportError("Qwen3Model is not available")
+                        
+                    messagebox.showinfo(
+                        "Model Download",
+                        "The Qwen3-VL-4B-Instruct model will be downloaded if not available locally.\n\n"
+                        "Please be patient."
+                    )
+                    model = Qwen3Model()
+                    
                 else:
                     raise ValueError(f"Unsupported model: {model_name}")
                 
@@ -594,6 +620,11 @@ class ModelManager:
                         "- Try installing with:\n"
                         "  pip install --upgrade transformers accelerate bitsandbytes\n"
                         "  pip install qwen-vl-utils[decord]==0.0.8\n\n"
+                        f"Error: {str(model_error)}"
+                    )
+                elif model_name.lower() == "qwen3":
+                    error_message = (
+                        "Failed to load or download Qwen3-VL-4B-Instruct model.\n\n"
                         f"Error: {str(model_error)}"
                     )
                 else:
@@ -889,7 +920,7 @@ class ReviewGUI:
         model_combo = ttk.Combobox(
             controls_frame, 
             textvariable=self.model_var,
-            values=["florence2", "qwen-captioner"],
+            values=["florence2", "qwen-captioner", "qwen3"],
             state="readonly",
             width=10
         )

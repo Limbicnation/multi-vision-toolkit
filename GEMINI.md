@@ -5,7 +5,7 @@
 The Multi-Vision Toolkit is a standalone Python application designed for the local execution of advanced vision models, including Florence-2, Janus-Pro-1B, and Qwen2.5-VL. It offers a graphical user interface for tasks such as image captioning, object detection, and OCR, facilitating the creation of AI training datasets.
 
 ### 1.1 Core Capabilities
-- **Model Integration**: Supports Florence-2, Janus-Pro-1B, and Qwen2.5-VL.
+- **Model Integration**: Supports Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen3-VL-4B-Instruct.
 - **Graphical Interface**: A Tkinter-based GUI with features like drag-and-drop and batch processing.
 - **Prompt Engineering**: A secure templating system for dynamic prompt generation.
 - **Resource Optimization**: Includes automatic GPU memory management and quantization.
@@ -24,12 +24,14 @@ The model subsystem is built on a base class for consistency and extensibility.
 - **`florence_model.py`**: Implements Microsoft's Florence-2 model.
 - **`janus_model.py`**: Implements DeepSeek's Janus-Pro-1B model.
 - **`qwen_model.py`**: Implements Alibaba's Qwen2.5-VL with quantization.
+- **`qwen3_model.py`**: Implements Alibaba's Qwen3-VL-4B-Instruct model.
 - **`qwen_model_local.py`**: An offline-optimized variant of the Qwen model.
 
 **Contingency Models:**
 - **`dummy_florence_model.py`**: A fallback for Florence-2 loading failures.
 - **`dummy_janus_model.py`**: A CLIP-based fallback for the Janus model.
 - **`dummy_qwen_model.py`**: A basic fallback for the Qwen models.
+- **`dummy_qwen3_model.py`**: A fallback for Qwen3 model loading failures.
 
 ### 2.3 Prompt Engineering Subsystem (`templates/`)
 This subsystem provides secure and manageable prompt templating.
@@ -71,6 +73,7 @@ pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorc
 - **Florence-2 Large**: Requires >=8GB VRAM.
 - **Janus-Pro-1B**: Requires >=4GB VRAM.
 - **Qwen2.5-VL-3B**: Requires >=6GB VRAM with 8-bit quantization.
+- **Qwen3-VL-4B-Instruct**: Requires >=10GB VRAM (standard) or less with quantization.
 
 **Optimization Directives:**
 ```bash
@@ -169,7 +172,7 @@ python test_template_security.py
 - **Application Logic**: `main.py:100-166`
 - **Base Model Contract**: `base_model.py:37-90`
 - **Template System Core**: `template_manager.py`
-- **Model Implementations**: `florence_model.py`, `janus_model.py`, `qwen_model.py`
+- **Model Implementations**: `florence_model.py`, `janus_model.py`, `qwen_model.py`, `qwen3_model.py`
 - **System Dependencies**: `requirements.txt:1-28`
 - **Configuration**: `settings/theme.json`, `.env.example`
 - **Documentation**: `README.md`, `MEMORY_MANAGEMENT.md`, `SECURITY_FIXES_SUMMARY.md`, `TEMPLATE_SYSTEM_README.md`
