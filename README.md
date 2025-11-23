@@ -7,7 +7,12 @@
 
 ## 🚀 Key Features
 
-- **Multiple Vision Models**: Florence-2 (advanced vision tasks), Janus-Pro-1B (advanced multimodal understanding), and Qwen2.5-VL-3B-Instruct (high-quality captioning and analysis, optimized for performance)
+- **Multiple Vision Models**: Support for state-of-the-art models:
+  - **Florence-2** (Microsoft)
+  - **Janus-Pro-1B** (DeepSeek)
+  - **Qwen2.5-VL-3B-Instruct** (Alibaba)
+  - **Qwen3-VL-4B-Instruct** (Alibaba) [NEW]
+- **Intelligent Image Captioning**: Generate detailed, accurate captions for your images.
 - **Multi-task Capabilities**: Captioning, object detection, OCR, Visual Question Answering (primarily via Florence-2 and Janus-Pro-1B)
 - **Easy-to-use GUI**: Model switching, image preview, and keyboard shortcuts
 - **Dataset Preparation**: Support for AI training dataset creation
