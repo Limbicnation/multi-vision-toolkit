@@ -2,7 +2,11 @@
  A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen2.5-VL-7B-Captioner-Relaxed), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 <p align="center">
-  <img src="images/mvtk-feature-image.jpg" width="100%" alt="Multi-Vision Toolkit with Prompt Generation UI">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="images/feature-image-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="images/feature-image-light.png">
+    <img alt="Multi-Vision Toolkit with Prompt Generation UI" src="images/feature-image-light.png" width="100%">
+  </picture>
 </p>
 
 ## 🚀 Key Features
