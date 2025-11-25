@@ -32,17 +32,17 @@ def validate_environment():
     """Validate the environment for package compatibility."""
     logger = logging.getLogger(__name__)
     
-    # Disable flash attention globally to prevent conflicts
-    # Disable flash attention globally to prevent conflicts
-    flash_attn_env_vars = {
-        "DISABLE_FLASH_ATTENTION": "1",
-        "FLASH_ATTENTION_SKIP_CUDA_CHECK": "1",
-        "USE_FLASH_ATTENTION": "0",
-        "FLASH_ATTN_DISABLE": "1",
-        "ATTN_BACKEND": "eager",
-    }
-    for var, val in flash_attn_env_vars.items():
-        os.environ[var] = val
+    # Enable Flash Attention if available
+    # We no longer forcibly disable it
+    # flash_attn_env_vars = {
+    #     "DISABLE_FLASH_ATTENTION": "1",
+    #     "FLASH_ATTENTION_SKIP_CUDA_CHECK": "1",
+    #     "USE_FLASH_ATTENTION": "0",
+    #     "FLASH_ATTN_DISABLE": "1",
+    #     "ATTN_BACKEND": "eager",
+    # }
+    # for var, val in flash_attn_env_vars.items():
+    #     os.environ[var] = val
     
     # Check torch version
     try:
@@ -565,6 +565,19 @@ class ModelManager:
                     model = QwenCaptioner()
                     
                 elif model_name.lower() == "qwen3":
+                    # Lazy import Qwen3Model
+                    try:
+                        from models.qwen3_model import Qwen3Model
+                        logger.info("Successfully imported Qwen3Model")
+                    except (ImportError, ModuleNotFoundError) as e:
+                        logger.error(f"Failed to load qwen3 model: {str(e)}")
+                        try:
+                            from models.dummy_qwen3_model import Qwen3Model
+                            logger.warning("Using dummy Qwen3Model as fallback")
+                        except ImportError as import_err:
+                            logger.error(f"Failed to import dummy Qwen3Model: {import_err}")
+                            raise ImportError("Qwen3Model is not available")
+
                     logger.info(f"Qwen3Model class available: {Qwen3Model is not None}")
                     if Qwen3Model is None:
                         raise ImportError("Qwen3Model is not available")
@@ -1583,8 +1596,12 @@ class ReviewGUI:
             if new_model != self.model_name:
                 logger.info(f"Switching model from {self.model_name} to {new_model}")
                 
+                # Signal preload worker to stop
+                self._stop_preload = True
+                
                 # Add thread safety for model switching
                 with self.model_lock:
+                    self._stop_preload = False # Reset flag once we have the lock
                     # Clear pending preload tasks
                     while not self.preload_queue.empty():
                         try:
@@ -2160,6 +2177,11 @@ class ReviewGUI:
 
                             if self.model is None:
                                 logger.warning("Model unavailable during preload")
+                                continue
+
+                            # Check if we should stop preloading (e.g. model switch initiated)
+                            if getattr(self, '_stop_preload', False):
+                                logger.info("Preload aborted due to stop signal")
                                 continue
 
                             logger.info(f"Preloading analysis for {img_path}")
