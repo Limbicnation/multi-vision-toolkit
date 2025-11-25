@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__) # Define logger early
 import os
 from typing import Tuple, Optional, Dict, List, Any
 import importlib
+import traceback
 
 # Set PyTorch memory allocation config to avoid fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -393,6 +394,9 @@ class QwenCaptioner(BaseVisionModel):
         if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, _QWEN_CLASS_AVAILABLE]):
             logger.warning("QwenCaptioner using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             logger.warning(f"Reason: _using_fallback={getattr(self, '_using_fallback', False)}, model={self.model is not None}, processor={self.processor is not None}, class_available={_QWEN_CLASS_AVAILABLE}")
+            # Log the fallback reason stored during setup if available
+            if hasattr(self, '_fallback_reason'):
+                logger.warning(f"Original fallback reason: {self._fallback_reason}")
             return self._analyze_with_clip(pil_image, quality)
 
         # Determine instruction/prompt to use
@@ -435,7 +439,7 @@ class QwenCaptioner(BaseVisionModel):
             
             # Use memory-efficient inference with mixed precision
             with torch.inference_mode():
-                with torch.cuda.amp.autocast(dtype=torch.float16):
+                with torch.amp.autocast('cuda', dtype=torch.float16):
                     generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
@@ -458,6 +462,7 @@ class QwenCaptioner(BaseVisionModel):
 
         except Exception as e:
             logger.error(f"Error generating caption with QwenCaptioner: {str(e)}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self._analyze_with_clip(pil_image, quality)
 
     @classmethod
@@ -493,6 +498,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(error_msg)
 
     def _load_clip_as_fallback(self, reason: str) -> None:
+        self._fallback_reason = reason # Store reason for debugging
         logger.warning(f"Attempting to load CLIP model as a fallback due to: {reason}")
         try:
             global CLIPModel, CLIPProcessor
@@ -817,7 +823,7 @@ class QwenCaptioner(BaseVisionModel):
             
             # Use memory-efficient inference with mixed precision
             with torch.inference_mode():
-                with torch.cuda.amp.autocast(dtype=torch.float16):
+                with torch.amp.autocast('cuda', dtype=torch.float16):
                     generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]

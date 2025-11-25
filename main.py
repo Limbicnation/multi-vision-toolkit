@@ -10,6 +10,7 @@ import shutil
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
 import threading
+import queue
 
 # Import template system
 try:
@@ -31,11 +32,17 @@ def validate_environment():
     """Validate the environment for package compatibility."""
     logger = logging.getLogger(__name__)
     
-    # Disable flash attention globally to prevent conflicts
-    import os
-    os.environ["DISABLE_FLASH_ATTENTION"] = "1"
-    os.environ["FLASH_ATTENTION_SKIP_CUDA_CHECK"] = "1"
-    os.environ["USE_FLASH_ATTENTION"] = "0"
+    # Enable Flash Attention if available
+    # We no longer forcibly disable it
+    # flash_attn_env_vars = {
+    #     "DISABLE_FLASH_ATTENTION": "1",
+    #     "FLASH_ATTENTION_SKIP_CUDA_CHECK": "1",
+    #     "USE_FLASH_ATTENTION": "0",
+    #     "FLASH_ATTN_DISABLE": "1",
+    #     "ATTN_BACKEND": "eager",
+    # }
+    # for var, val in flash_attn_env_vars.items():
+    #     os.environ[var] = val
     
     # Check torch version
     try:
@@ -73,7 +80,10 @@ def validate_environment():
     try:
         import importlib.util
         if importlib.util.find_spec("flash_attn"):
-            logger.warning("Flash attention detected - disabled globally to prevent symbol conflicts")
+            logger.warning(
+                "Flash attention installed but disabled. "
+                "If issues persist: pip uninstall flash-attn"
+            )
         else:
             logger.info("Flash attention not installed - this is fine, using eager attention")
     except Exception as e:
@@ -460,7 +470,7 @@ class ModelManager:
         self.check_model_cache()
 
     def unload_model(self, model_name: str = None) -> None:
-        """Unload a specific model or current model to free memory"""
+        """Unload model with proper CUDA cleanup order"""
         import gc
         
         if model_name is None:
@@ -468,38 +478,44 @@ class ModelManager:
             
         if model_name and model_name in self.models:
             logger.info(f"Unloading model: {model_name}")
-            
-            # Get the model object
             model = self.models[model_name]
             
-            # Clean up model attributes
+            # Step 1: Move to CPU first
             if hasattr(model, 'model') and model.model is not None:
-                if hasattr(model.model, 'cpu'):
-                    model.model.cpu()
-                del model.model
-                model.model = None
-                
-            if hasattr(model, 'processor') and model.processor is not None:
-                del model.processor
-                model.processor = None
-                
-            if hasattr(model, 'tokenizer') and model.tokenizer is not None:
-                del model.tokenizer
-                model.tokenizer = None
+                try:
+                    model.model.to('cpu')
+                except Exception as e:
+                    logger.warning(f"Could not move model to CPU: {e}")
             
-            # Remove from cache
+            # Step 2: Delete references
+            for attr in ['model', 'processor', 'tokenizer', 'vision_model']:
+                if hasattr(model, attr):
+                    try:
+                        delattr(model, attr)
+                    except Exception:
+                        pass
+            
+            # Step 3: Remove from cache
             del self.models[model_name]
-            
-            # Clear current model if it was the one unloaded
             if model_name == self._current_model_name:
                 self._current_model = None
                 self._current_model_name = None
             
-            # Force garbage collection and clear CUDA cache
-            gc.collect()
+            # Step 4: CUDA cleanup (proper order)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+            
+            # Step 5: Python GC
+            gc.collect()
+            
+            # Step 6: Second CUDA pass after GC
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+                # Log memory state
+                allocated = torch.cuda.memory_allocated() / 1e9
+                logger.info(f"After unload - Allocated: {allocated:.2f}GB")
                 
             logger.info(f"Successfully unloaded model: {model_name}")
 
@@ -549,6 +565,19 @@ class ModelManager:
                     model = QwenCaptioner()
                     
                 elif model_name.lower() == "qwen3":
+                    # Lazy import Qwen3Model
+                    try:
+                        from models.qwen3_model import Qwen3Model
+                        logger.info("Successfully imported Qwen3Model")
+                    except (ImportError, ModuleNotFoundError) as e:
+                        logger.error(f"Failed to load qwen3 model: {str(e)}")
+                        try:
+                            from models.dummy_qwen3_model import Qwen3Model
+                            logger.warning("Using dummy Qwen3Model as fallback")
+                        except ImportError as import_err:
+                            logger.error(f"Failed to import dummy Qwen3Model: {import_err}")
+                            raise ImportError("Qwen3Model is not available")
+
                     logger.info(f"Qwen3Model class available: {Qwen3Model is not None}")
                     if Qwen3Model is None:
                         raise ImportError("Qwen3Model is not available")
@@ -824,9 +853,11 @@ class ReviewGUI:
                 self.model = self.model_manager.get_model(self.model_name)
             except Exception as final_fallback_e:
                 logger.critical(f"All models failed to load: {final_fallback_e}")
+                # We can't use self.root here as it might not be initialized yet
+                # messagebox.showerror will create a temporary root if needed
                 messagebox.showerror("Critical Error", "All available models failed to load. The application cannot continue.")
-                self.root.quit() # Exit if no model can be loaded
-                return # Stop further initialization
+                import sys
+                sys.exit(1) # Exit if no model can be loaded
 
         self.dataset_prep = DatasetPreparator()
         
@@ -849,13 +880,30 @@ class ReviewGUI:
         self.image_cache = {}
         self.cache_lock = threading.RLock()  # Reentrant lock for nested calls
         self.max_cache_size = 100  # Limit cache to prevent memory exhaustion
-        self.preload_queue = []
+        
+        # Thread safety for items list
+        self.items_lock = threading.Lock()
+        # Thread safety for model access
+        self.model_lock = threading.RLock()
+        
+        # Preloading worker
+        self.preload_queue = queue.LifoQueue() # Use LIFO to prioritize most recent requests
+        self.preload_thread = threading.Thread(target=self._preload_worker_loop, daemon=True)
+        self.preload_thread.start()
+        
+        # Pending actions state
+        self.pending_actions = {} # Map of img_path_str -> action ('approved'/'rejected')
+        self.action_history = [] # Stack of (img_path_str, old_action, new_action) tuples for undo
+        self.item_path_to_idx = {} # Map of img_path_str -> index in self.items for O(1) lookup
         
         # Initialize TK with drag and drop support if available
         if HAS_DND:
             self.root = TkinterDnD.Tk()
         else:
             self.root = tk.Tk()
+            
+        # UI Style (Must be initialized AFTER root window)
+        self.style = ttk.Style()
             
         self.root.title("Multi-Vision Toolkit")
         self.root.geometry("1280x800")
@@ -1140,6 +1188,23 @@ class ReviewGUI:
         )
         self.reject_btn.pack(side=tk.LEFT, padx=5)
         
+        # Pending Action Controls
+        self.undo_btn = ttk.Button(
+            action_frame,
+            text="↶ Undo (Ctrl+Z)",
+            command=self.undo_last_action,
+            width=15
+        )
+        self.undo_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.commit_btn = ttk.Button(
+            action_frame,
+            text="💾 Commit (Ctrl+S)",
+            command=self.commit_actions,
+            width=15
+        )
+        self.commit_btn.pack(side=tk.LEFT, padx=5)
+        
         # Navigation buttons
         nav_frame = ttk.Frame(controls_frame)
         nav_frame.pack(side=tk.RIGHT, padx=5)
@@ -1182,15 +1247,29 @@ class ReviewGUI:
         )
         self.progress_label.pack(side=tk.RIGHT, padx=10, pady=3)
     
+    def _handle_key_event(self, event, func):
+        """Wrapper to prevent shortcuts from firing when typing in text fields"""
+        widget = event.widget
+        # Check if widget is a text entry type
+        if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry)) or \
+           "text" in str(widget.winfo_class()).lower() or \
+           "entry" in str(widget.winfo_class()).lower():
+            return
+        func()
+
     def _setup_keyboard_shortcuts(self):
         """Setup keyboard shortcuts"""
-        self.root.bind('a', lambda e: self.approve())
-        self.root.bind('r', lambda e: self.reject())
-        self.root.bind('<Left>', lambda e: self._prev_image())
-        self.root.bind('<Right>', lambda e: self._next_image())
-        self.root.bind('t', lambda e: self._toggle_theme())
+        self.root.bind('a', lambda e: self._handle_key_event(e, self.approve))
+        self.root.bind('r', lambda e: self._handle_key_event(e, self.reject))
+        self.root.bind('<Left>', lambda e: self._handle_key_event(e, self._prev_image))
+        self.root.bind('<Right>', lambda e: self._handle_key_event(e, self._next_image))
+        self.root.bind('t', lambda e: self._handle_key_event(e, self._toggle_theme))
+        
+        # Function keys and modifiers can remain global
         self.root.bind('<F5>', lambda e: self.load_items())
         self.root.bind('<F11>', lambda e: self._toggle_fullscreen())
+        self.root.bind('<Control-s>', lambda e: self.commit_actions())
+        self.root.bind('<Control-z>', lambda e: self.undo_last_action())
         
         # Setup drag and drop functionality if available
         if HAS_DND:
@@ -1516,12 +1595,30 @@ class ReviewGUI:
             new_model = self.model_var.get()
             if new_model != self.model_name:
                 logger.info(f"Switching model from {self.model_name} to {new_model}")
-                self.status_label.config(text=f"Switching to {new_model} model...")
-                self.model_label.config(text=f"{new_model} (loading...)")
-                self.root.update()  # Refresh UI to show status
                 
-                # Disable controls during model switching
-                self._set_controls_state(tk.DISABLED)
+                # Signal preload worker to stop
+                self._stop_preload = True
+                
+                # Add thread safety for model switching
+                with self.model_lock:
+                    self._stop_preload = False # Reset flag once we have the lock
+                    # Clear pending preload tasks
+                    while not self.preload_queue.empty():
+                        try:
+                            self.preload_queue.get_nowait()
+                            self.preload_queue.task_done()
+                        except queue.Empty:
+                            break
+
+                    # Clear cache when switching models
+                    self._cache_clear()
+
+                    self.status_label.config(text=f"Switching to {new_model} model...")
+                    self.model_label.config(text=f"{new_model} (loading...)")
+                    self.root.update()  # Refresh UI to show status
+                    
+                    # Disable controls during model switching
+                    self._set_controls_state(tk.DISABLED)
                 
                 try:
                     # Create loading indicator in a separate window
@@ -1789,7 +1886,6 @@ class ReviewGUI:
 
     def load_items(self):
         """Load image items with error handling"""
-        self.items = []
         try:
             self.status_label.config(text="Loading images...")
             
@@ -1798,19 +1894,26 @@ class ReviewGUI:
                 self.status_label.config(text=f"Review directory not found: {self.review_dir}")
                 return
                 
-            for f in self.review_dir.iterdir():
-                if self.dataset_prep.is_supported_image(f):
-                    img_path = f
-                    base_name = f.stem
-                    json_path = f.parent / f"{base_name}_for_review.json"
-                    
-                    if not json_path.exists():
-                        self._atomic_write_text(
-                            json_path,
-                            json.dumps({"results": {"caption": ""}}, indent=2)
-                        )
-                    
-                    self.items.append((base_name, json_path, img_path))
+            with self.items_lock:
+                self.items = []
+                self.item_path_to_idx = {}
+                
+                for f in self.review_dir.iterdir():
+                    if self.dataset_prep.is_supported_image(f):
+                        img_path = f
+                        base_name = f.stem
+                        json_path = f.parent / f"{base_name}_for_review.json"
+                        
+                        if not json_path.exists():
+                            self._atomic_write_text(
+                                json_path,
+                                json.dumps({"results": {"caption": ""}}, indent=2)
+                            )
+                        
+                        self.items.append((base_name, json_path, img_path))
+                
+                # Populate index map
+                self.item_path_to_idx = {str(path): i for i, (_, _, path) in enumerate(self.items)}
             
             self.current = 0
             self.progress_label.config(text=f"0/{len(self.items)}")
@@ -1876,7 +1979,7 @@ class ReviewGUI:
             return
         
         # Clean up previous image resources
-        self._cleanup_image_resources()
+        # self._cleanup_image_resources() # Removed to prevent premature GC causing pyimage errors
             
         try:
             self.status_label.config(text="Loading image...")
@@ -1894,11 +1997,25 @@ class ReviewGUI:
             try:
                 # Check cache first
                 cache_result = self._cache_get(str(img_path))
+                use_cache = False
+                
                 if cache_result is not None:
+                    (cached_desc, cached_caption), was_fallback = cache_result
+                    model_in_fallback = getattr(self.model, '_using_fallback', False)
+                    
+                    # Don't use cached fallback if model is now healthy
+                    if was_fallback and not model_in_fallback:
+                        logger.info(f"Ignoring cached fallback for {img_path}")
+                        use_cache = False
+                    else:
+                        description, clean_caption = cached_desc, cached_caption
+                        use_cache = True
+
+                if use_cache:
                     logger.info(f"Using cached analysis for {img_path}")
-                    description, clean_caption = cache_result
+                    (description, clean_caption), _ = cache_result
                 else: 
-                    # Image not in cache, so analyze it
+                    # Image not in cache or cache invalid, so analyze it
                     self.status_label.config(text=f"Analyzing image with {self.model_name} model...")
                     self.root.update()  # Refresh UI to show status
                     
@@ -1965,10 +2082,25 @@ class ReviewGUI:
                 new_height = max(1, new_height)
                 img = img.resize((new_width, new_height), Image.LANCZOS)
             
-            photo = ImageTk.PhotoImage(img)
+            # Store reference to old photo to prevent premature GC
+            old_photo = getattr(self.img_label, 'image', None)
             
-            self.img_label.configure(image=photo)
-            self.img_label.image = photo
+            new_photo = ImageTk.PhotoImage(img, master=self.img_label)
+
+            # Store strong reference IMMEDIATELY after creation (BEFORE configure)
+            # This prevents GC from collecting the PhotoImage during configure()
+            self.img_label.image = new_photo
+            
+            try:
+                self.img_label.configure(image=new_photo)
+            except tk.TclError as tcl_e:
+                # If "pyimageX doesn't exist" occurs, it might be due to a master mismatch or race condition
+                logger.warning(f"TclError setting image: {tcl_e}. Retrying...")
+                self.img_label.configure(image='') # Clear first
+                self.img_label.configure(image=new_photo)
+            
+            # Now safe to release old reference
+            old_photo = None
             
             self.img_label.place(relx=0.5, rely=0.5, anchor='center')
             
@@ -1991,6 +2123,9 @@ class ReviewGUI:
             if not description.startswith("Error:"):
                  self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
 
+            # Apply visual feedback for pending actions
+            self._apply_pending_visuals(str(img_path))
+
             # Auto-generate prompts if enabled and prompts are visible
             self._auto_generate_prompts_if_enabled(description)
 
@@ -2000,39 +2135,84 @@ class ReviewGUI:
             logger.error(f"Critical error in show_current for {self.items[self.current][2].name if self.items else 'N/A'}: {str(e)}")
             self.status_label.config(text=f"Error displaying image: {str(e)}")
             # Optionally, clear display or show a generic error image
-            self.img_label.config(image="")
+            # Optionally, clear display or show a generic error image
+            try:
+                self.img_label.configure(image='')
+                self.img_label.image = None
+            except tk.TclError:
+                pass # Image reference already invalid
+                
             self.caption_text.config(state=tk.NORMAL)
             self.caption_text.delete(1.0, tk.END)
             self.caption_text.insert(tk.END, f"Failed to display image or analysis: {str(e)}")
             self.caption_text.config(state=tk.DISABLED)
             # raise # Re-raise if it's a critical error that should stop the app or be handled higher up
 
+    def _preload_worker_loop(self):
+        """Background worker to process preload requests sequentially"""
+        while True:
+            try:
+                # Get next image index to preload
+                idx = self.preload_queue.get()
+                
+                if idx is None: # Sentinel to stop
+                    break
+                    
+                try:
+                    with self.items_lock:
+                        if idx >= len(self.items):
+                            self.preload_queue.task_done()
+                            continue
+                        _, _, img_path = self.items[idx]
+                    
+                    path_str = str(img_path)
+                    
+                    # Skip if already cached
+                    if not self._cache_contains(path_str):
+                        # Acquire model lock for thread-safe analysis
+                        with self.model_lock:
+                            # Double-check cache after acquiring lock
+                            if self._cache_contains(path_str):
+                                continue
+
+                            if self.model is None:
+                                logger.warning("Model unavailable during preload")
+                                continue
+
+                            # Check if we should stop preloading (e.g. model switch initiated)
+                            if getattr(self, '_stop_preload', False):
+                                logger.info("Preload aborted due to stop signal")
+                                continue
+
+                            logger.info(f"Preloading analysis for {img_path}")
+                            description, clean_caption = self.model.analyze_image(path_str)
+                        
+                        # Cache result outside lock (if not fallback)
+                        if "Fallback Mode" not in description:
+                            self._cache_set(path_str, (description, clean_caption))
+                        else:
+                            logger.warning(f"Preload generated fallback result for {img_path}, skipping cache.")
+                except Exception as e:
+                    logger.error(f"Error preloading image {idx}: {str(e)}")
+                finally:
+                    self.preload_queue.task_done()
+                    
+            except Exception as e:
+                logger.error(f"Error in preload worker: {e}")
+
     def _preload_next_images(self):
-        """Preload the next few images for faster navigation"""
+        """Queue the next few images for preloading"""
         # Get next 3 images to preload
         preload_count = 3
-        next_indices = [
-            (self.current + i) % len(self.items) 
-            for i in range(1, preload_count + 1) 
-            if self.current + i < len(self.items)
-        ]
         
-        def preload_worker(idx):
-            try:
-                _, _, img_path = self.items[idx]
-                if not self._cache_contains(str(img_path)):
-                    logger.info(f"Preloading analysis for {img_path}")
-                    description, clean_caption = self.model.analyze_image(str(img_path))
-                    self._cache_set(str(img_path), (description, clean_caption))
-            except Exception as e:
-                logger.error(f"Error preloading image {idx}: {str(e)}")
+        # Clear existing queue if possible? No, queue.Queue doesn't support clearing easily.
+        # But we can just add new ones. The worker will skip cached ones.
         
-        # Start preloading threads (not daemon for better cleanup)
-        threads = []
-        for idx in next_indices:
-            thread = threading.Thread(target=preload_worker, args=(idx,))
-            thread.start()
-            threads.append(thread)
+        for i in range(1, preload_count + 1):
+            idx = (self.current + i) % len(self.items)
+            if self.current + i < len(self.items):
+                # Avoid adding duplicates if possible, but queue handles it fine
+                self.preload_queue.put(idx)
 
     def move_item(self, dest_dir: Path):
         """Move current item to destination directory with error handling"""
@@ -2081,23 +2261,192 @@ class ReviewGUI:
             self.status_label.config(text=f"Error {action.lower()} image: {str(e)}")
             raise
 
-    def approve(self):
-        """Approve current item with error handling"""
+    def _apply_pending_visuals(self, img_path_str):
+        """Apply visual indicators for pending actions"""
         try:
-            logger.info(f"Approving item {self.current + 1}/{len(self.items)}")
-            self.move_item(self.approved_dir)
+            status = self.pending_actions.get(img_path_str)
+            # Use pre-initialized style
+            style = self.style
+            
+            if status == 'approved':
+                self.img_label.config(background=DARK_APPROVE_BTN if self.theme_manager.theme == "dark" else LIGHT_APPROVE_BTN)
+                self.status_label.config(text=f"Marked for Approval (Pending Commit)")
+            elif status == 'rejected':
+                self.img_label.config(background=DARK_REJECT_BTN if self.theme_manager.theme == "dark" else LIGHT_REJECT_BTN)
+                self.status_label.config(text=f"Marked for Rejection (Pending Commit)")
+            else:
+                self.img_label.config(background=self.theme_manager.root.cget('bg'))
+                
+            # Update button states based on pending actions
+            has_pending = len(self.pending_actions) > 0
+            if hasattr(self, 'commit_btn'):
+                self.commit_btn.config(state=tk.NORMAL if has_pending else tk.DISABLED)
+                self.commit_btn.config(text=f"💾 Commit ({len(self.pending_actions)})")
+                
+            if hasattr(self, 'undo_btn'):
+                self.undo_btn.config(state=tk.NORMAL if self.action_history else tk.DISABLED)
+                
         except Exception as e:
-            logger.error(f"Error approving item: {str(e)}")
-            messagebox.showerror("Error", f"Failed to approve item: {str(e)}")
+            logger.error(f"Error applying pending visuals: {e}")
+
+    def approve(self):
+        """Mark current item for approval"""
+        if not self.items:
+            return
+            
+        try:
+            _, _, img_path = self.items[self.current]
+            img_path_str = str(img_path)
+            
+            # Store action
+            old_action = self.pending_actions.get(img_path_str)
+            self.pending_actions[img_path_str] = 'approved'
+            self.action_history.append((img_path_str, old_action, 'approved'))
+            
+            logger.info(f"Marked item {self.current + 1} for approval")
+            self._next_image()
+            
+        except Exception as e:
+            logger.error(f"Error marking item for approval: {str(e)}")
+            messagebox.showerror("Error", f"Failed to mark item: {str(e)}")
         
     def reject(self):
-        """Reject current item with error handling"""
+        """Mark current item for rejection"""
+        if not self.items:
+            return
+            
         try:
-            logger.info(f"Rejecting item {self.current + 1}/{len(self.items)}")
-            self.move_item(self.rejected_dir)
+            _, _, img_path = self.items[self.current]
+            img_path_str = str(img_path)
+            
+            # Store action
+            old_action = self.pending_actions.get(img_path_str)
+            self.pending_actions[img_path_str] = 'rejected'
+            self.action_history.append((img_path_str, old_action, 'rejected'))
+            
+            logger.info(f"Marked item {self.current + 1} for rejection")
+            self._next_image()
+            
         except Exception as e:
-            logger.error(f"Error rejecting item: {str(e)}")
-            messagebox.showerror("Error", f"Failed to reject item: {str(e)}")
+            logger.error(f"Error marking item for rejection: {str(e)}")
+            messagebox.showerror("Error", f"Failed to mark item: {str(e)}")
+
+    def undo_last_action(self):
+        """Undo the last pending action"""
+        if not self.action_history:
+            return
+            
+        try:
+            img_path_str, old_action, new_action = self.action_history.pop()
+            
+            # Only perform undo if the current state matches the action being undone
+            if self.pending_actions.get(img_path_str) == new_action:
+                if old_action is None:
+                    # If there was no previous action, remove it
+                    if img_path_str in self.pending_actions:
+                        del self.pending_actions[img_path_str]
+                else:
+                    # Restore previous action
+                    self.pending_actions[img_path_str] = old_action
+                
+            # Find index of this image to navigate back to it using O(1) lookup
+            with self.items_lock:
+                target_idx = self.item_path_to_idx.get(img_path_str, -1)
+            
+            if target_idx != -1:
+                self.current = target_idx
+                self.show_current()
+                self.status_label.config(text=f"Undid last action ({new_action})")
+            else:
+                # If image not found (shouldn't happen in this flow), just refresh current
+                self.show_current()
+                
+        except Exception as e:
+            logger.error(f"Error undoing action: {e}")
+
+    def commit_actions(self):
+        """Commit all pending actions"""
+        if not self.pending_actions:
+            return
+            
+        try:
+            count = len(self.pending_actions)
+            if not messagebox.askyesno("Commit Actions", f"Process {count} pending actions?"):
+                return
+                
+            self.status_label.config(text=f"Committing {count} actions...")
+            
+            # Process actions
+            # We need to process in reverse order of indices to avoid shifting issues if we were popping by index
+            # But here we are moving files, so we should iterate carefully.
+            # Better strategy: Identify all items to move first, then move them.
+            
+            items_to_remove = []
+        
+            # Protect access to items list
+            with self.items_lock:
+                # Create a copy for iteration to avoid modification issues during iteration
+                # But we need indices, so we'll iterate carefully or use the copy to find items
+                # Since we are locking, we can iterate directly but we shouldn't modify while iterating
+                items_snapshot = list(enumerate(self.items))
+                
+                for i, (base_name, json_path, img_path) in items_snapshot:
+                    path_str = str(img_path)
+                    if path_str in self.pending_actions:
+                        action = self.pending_actions[path_str]
+                        dest_dir = self.approved_dir if action == 'approved' else self.rejected_dir
+                        
+                        try:
+                            # Move files
+                            new_img_path = dest_dir / img_path.name
+                            txt_path = img_path.with_suffix('.txt')
+                            new_txt_path = dest_dir / txt_path.name
+                            
+                            shutil.move(str(img_path), str(new_img_path))
+                            if txt_path.exists():
+                                shutil.move(str(txt_path), str(new_txt_path))
+                            
+                            # Update JSON
+                            if json_path.exists():
+                                data = json.loads(json_path.read_text(encoding='utf-8'))
+                                data['review_status'] = action
+                                data['timestamp'] = datetime.now().isoformat()
+                                
+                                new_json_path = dest_dir / f"{base_name}_reviewed.json"
+                                self._atomic_write_text(new_json_path, json.dumps(data, indent=2))
+                                json_path.unlink()
+                                
+                            items_to_remove.append(i)
+                            
+                        except Exception as move_error:
+                            logger.error(f"Error moving {img_path}: {move_error}")
+                
+                # Remove processed items from list (in reverse order to maintain indices)
+                for i in sorted(items_to_remove, reverse=True):
+                    if i < len(self.items): # Safety check
+                        self.items.pop(i)
+                
+                # Rebuild index map
+                self.item_path_to_idx = {str(path): i for i, (_, _, path) in enumerate(self.items)}
+                    
+                # Clear state
+                self.pending_actions.clear()
+                self.action_history.clear()
+                
+                # Refresh view
+                if self.items:
+                    if self.current >= len(self.items):
+                        self.current = len(self.items) - 1
+                    self.show_current()
+                    self.status_label.config(text=f"Successfully processed {count} images")
+                else:
+                    self.status_label.config(text="All images processed")
+                    messagebox.showinfo("Complete", "All images have been processed.")
+                    # Optional: self.root.quit()
+                
+        except Exception as e:
+            logger.error(f"Error committing actions: {e}")
+            messagebox.showerror("Error", f"Failed to commit actions: {e}")
 
     def _save_caption_edits(self):
         """Save edited captions to both JSON and TXT files"""
@@ -2449,7 +2798,7 @@ class ReviewGUI:
                     for item_idx, (base_name, json_path, img_path) in enumerate(current_batch_items):
                         cache_result = self._cache_get(str(img_path))
                         if cache_result is not None:
-                            description, clean_caption = cache_result
+                            (description, clean_caption), _ = cache_result
                             # Save already cached results
                             data = {"results": {"caption": description}}
                             self._atomic_write_text(json_path, json.dumps(data, indent=2))
@@ -2664,13 +3013,21 @@ class ReviewGUI:
         except Exception as e:
             logger.error(f"Error creating batch summary report: {e}")
 
-    def _cache_get(self, key: str) -> Optional[Tuple[str, str]]:
-        """Thread-safe cache get operation"""
+    def _cache_get(self, key: str) -> Optional[Tuple[Tuple[str, str], bool]]:
+        """Thread-safe cache get returning (value, is_fallback)"""
         with self.cache_lock:
-            return self.image_cache.get(key)
+            result = self.image_cache.get(key)
+            if result is None:
+                return None
+            # Handle legacy entries without fallback flag
+            if isinstance(result, tuple) and len(result) == 2:
+                if isinstance(result[0], tuple):
+                    return result  # New format
+                return (result, False)  # Legacy format
+            return None
     
-    def _cache_set(self, key: str, value: Tuple[str, str]) -> None:
-        """Thread-safe cache set operation with size limits"""
+    def _cache_set(self, key: str, value: Tuple[str, str], is_fallback: bool = False) -> None:
+        """Thread-safe cache set with fallback tracking"""
         with self.cache_lock:
             # Remove oldest entries if cache is full
             if len(self.image_cache) >= self.max_cache_size:
@@ -2680,7 +3037,8 @@ class ReviewGUI:
                     self.image_cache.pop(old_key, None)
                 logger.info(f"Cache cleanup: removed {len(keys_to_remove)} entries")
             
-            self.image_cache[key] = value
+            # Store value with fallback flag: ((desc, caption), is_fallback)
+            self.image_cache[key] = (value, is_fallback)
     
     def _cache_clear(self) -> None:
         """Thread-safe cache clear operation"""
@@ -2691,6 +3049,110 @@ class ReviewGUI:
         """Thread-safe cache membership test"""
         with self.cache_lock:
             return key in self.image_cache
+    
+    def toggle_theme(self):
+        """Toggle between light and dark themes"""
+        try:
+            current_theme = self.style.theme_use()
+            # If current theme is not standard, we assume it's one of ours or system default
+            # Simple toggle logic: if background is dark -> switch to light, else dark
+            
+            bg_color = self.root.cget('bg')
+            is_dark = False
+            
+            # Check if current background is dark (simple heuristic)
+            if bg_color.startswith('#'):
+                # Parse hex
+                r = int(bg_color[1:3], 16)
+                g = int(bg_color[3:5], 16)
+                b = int(bg_color[5:7], 16)
+                if (r + g + b) / 3 < 128:
+                    is_dark = True
+            elif bg_color in ['black', 'gray10', 'gray20', 'gray30']:
+                is_dark = True
+                
+            new_theme = "light" if is_dark else "dark"
+            self.apply_theme(new_theme)
+            
+        except Exception as e:
+            logger.error(f"Error toggling theme: {e}")
+            
+    def apply_theme(self, theme_name: str):
+        """Apply the specified theme"""
+        try:
+            if theme_name == "dark":
+                # Dark theme colors
+                bg_color = "#2d2d2d"
+                fg_color = "#ffffff"
+                entry_bg = "#3d3d3d"
+                entry_fg = "#ffffff"
+                select_bg = "#4a4a4a"
+                
+                self.style.theme_use('clam') # Use clam as base for better customization
+                
+                self.style.configure(".", background=bg_color, foreground=fg_color, fieldbackground=entry_bg)
+                self.style.configure("TLabel", background=bg_color, foreground=fg_color)
+                self.style.configure("TButton", background=select_bg, foreground=fg_color)
+                self.style.configure("TEntry", fieldbackground=entry_bg, foreground=entry_fg)
+                self.style.configure("TFrame", background=bg_color)
+                self.style.configure("TLabelframe", background=bg_color, foreground=fg_color)
+                self.style.configure("TLabelframe.Label", background=bg_color, foreground=fg_color)
+                
+                # Configure root and standard widgets
+                self.root.configure(bg=bg_color)
+                self.root.option_add("*Background", bg_color)
+                self.root.option_add("*Foreground", fg_color)
+                self.root.option_add("*Entry.Background", entry_bg)
+                self.root.option_add("*Entry.Foreground", entry_fg)
+                self.root.option_add("*Text.Background", entry_bg)
+                self.root.option_add("*Text.Foreground", entry_fg)
+                self.root.option_add("*Listbox.Background", entry_bg)
+                self.root.option_add("*Listbox.Foreground", entry_fg)
+                
+                # Update specific widgets if they exist
+                if hasattr(self, 'caption_text'):
+                    self.caption_text.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+                if hasattr(self, 'img_label'):
+                    self.img_label.configure(bg=bg_color)
+                if hasattr(self, 'status_label'):
+                    self.status_label.configure(bg=bg_color, fg=fg_color)
+                    
+            else:
+                # Light theme (default)
+                bg_color = "#f0f0f0"
+                fg_color = "#000000"
+                entry_bg = "#ffffff"
+                entry_fg = "#000000"
+                
+                self.style.theme_use('clam')
+                
+                self.style.configure(".", background=bg_color, foreground=fg_color, fieldbackground=entry_bg)
+                self.style.configure("TLabel", background=bg_color, foreground=fg_color)
+                self.style.configure("TButton", background="#e1e1e1", foreground=fg_color)
+                self.style.configure("TEntry", fieldbackground=entry_bg, foreground=entry_fg)
+                self.style.configure("TFrame", background=bg_color)
+                
+                # Configure root
+                self.root.configure(bg=bg_color)
+                self.root.option_add("*Background", bg_color)
+                self.root.option_add("*Foreground", fg_color)
+                self.root.option_add("*Entry.Background", entry_bg)
+                self.root.option_add("*Entry.Foreground", entry_fg)
+                self.root.option_add("*Text.Background", entry_bg)
+                self.root.option_add("*Text.Foreground", entry_fg)
+                
+                # Update specific widgets
+                if hasattr(self, 'caption_text'):
+                    self.caption_text.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+                if hasattr(self, 'img_label'):
+                    self.img_label.configure(bg=bg_color)
+                if hasattr(self, 'status_label'):
+                    self.status_label.configure(bg=bg_color, fg=fg_color)
+                    
+            logger.info(f"Applied theme: {theme_name}")
+            
+        except Exception as e:
+            logger.error(f"Error applying theme {theme_name}: {e}")
     
     def _cache_items(self) -> List[Tuple[str, Tuple[str, str]]]:
         """Thread-safe cache items iteration"""
@@ -2739,12 +3201,14 @@ class ReviewGUI:
             raise e
     
     def _cleanup_image_resources(self) -> None:
-        """Clean up PIL image resources"""
+        """Clean up PIL image resources safely - ONLY call during shutdown"""
         try:
-            # Clear any existing image reference
-            if hasattr(self, 'img_label') and hasattr(self.img_label, 'image'):
+            if hasattr(self, 'img_label'):
+                try:
+                    self.img_label.configure(image='')
+                except tk.TclError:
+                    pass  # Widget may already be destroyed
                 self.img_label.image = None
-                self.img_label.configure(image='')
         except Exception as e:
             logger.warning(f"Error cleaning up image resources: {e}")
     

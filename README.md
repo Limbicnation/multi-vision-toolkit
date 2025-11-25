@@ -58,6 +58,10 @@ pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorc
 # Install core dependencies (includes pinned versions for stability)
 pip install -r requirements.txt
 
+# Install Flash Attention (Highly Recommended for Performance)
+# This drastically reduces inference time (e.g., from 20s to <5s)
+pip install flash-attn --no-build-isolation
+
 # Download models locally (recommended to avoid download issues)
 ./clone_models.sh
 
