@@ -10,6 +10,7 @@ import shutil
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any
 import threading
+import queue
 
 # Import template system
 try:
@@ -849,7 +850,15 @@ class ReviewGUI:
         self.image_cache = {}
         self.cache_lock = threading.RLock()  # Reentrant lock for nested calls
         self.max_cache_size = 100  # Limit cache to prevent memory exhaustion
-        self.preload_queue = []
+        
+        # Preloading worker
+        self.preload_queue = queue.Queue()
+        self.preload_thread = threading.Thread(target=self._preload_worker_loop, daemon=True)
+        self.preload_thread.start()
+        
+        # Pending actions state
+        self.pending_actions = {}  # Map: img_path -> 'approved' | 'rejected'
+        self.action_history = []   # Stack of (img_path, action) for Undo
         
         # Initialize TK with drag and drop support if available
         if HAS_DND:
@@ -1140,6 +1149,23 @@ class ReviewGUI:
         )
         self.reject_btn.pack(side=tk.LEFT, padx=5)
         
+        # Pending Action Controls
+        self.undo_btn = ttk.Button(
+            action_frame,
+            text="↶ Undo (Ctrl+Z)",
+            command=self.undo_last_action,
+            width=15
+        )
+        self.undo_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.commit_btn = ttk.Button(
+            action_frame,
+            text="💾 Commit (Ctrl+S)",
+            command=self.commit_actions,
+            width=15
+        )
+        self.commit_btn.pack(side=tk.LEFT, padx=5)
+        
         # Navigation buttons
         nav_frame = ttk.Frame(controls_frame)
         nav_frame.pack(side=tk.RIGHT, padx=5)
@@ -1182,15 +1208,29 @@ class ReviewGUI:
         )
         self.progress_label.pack(side=tk.RIGHT, padx=10, pady=3)
     
+    def _handle_key_event(self, event, func):
+        """Wrapper to prevent shortcuts from firing when typing in text fields"""
+        widget = event.widget
+        # Check if widget is a text entry type
+        if isinstance(widget, (tk.Entry, tk.Text, ttk.Entry)) or \
+           "text" in str(widget.winfo_class()).lower() or \
+           "entry" in str(widget.winfo_class()).lower():
+            return
+        func()
+
     def _setup_keyboard_shortcuts(self):
         """Setup keyboard shortcuts"""
-        self.root.bind('a', lambda e: self.approve())
-        self.root.bind('r', lambda e: self.reject())
-        self.root.bind('<Left>', lambda e: self._prev_image())
-        self.root.bind('<Right>', lambda e: self._next_image())
-        self.root.bind('t', lambda e: self._toggle_theme())
+        self.root.bind('a', lambda e: self._handle_key_event(e, self.approve))
+        self.root.bind('r', lambda e: self._handle_key_event(e, self.reject))
+        self.root.bind('<Left>', lambda e: self._handle_key_event(e, self._prev_image))
+        self.root.bind('<Right>', lambda e: self._handle_key_event(e, self._next_image))
+        self.root.bind('t', lambda e: self._handle_key_event(e, self._toggle_theme))
+        
+        # Function keys and modifiers can remain global
         self.root.bind('<F5>', lambda e: self.load_items())
         self.root.bind('<F11>', lambda e: self._toggle_fullscreen())
+        self.root.bind('<Control-s>', lambda e: self.commit_actions())
+        self.root.bind('<Control-z>', lambda e: self.undo_last_action())
         
         # Setup drag and drop functionality if available
         if HAS_DND:
@@ -1894,11 +1934,26 @@ class ReviewGUI:
             try:
                 # Check cache first
                 cache_result = self._cache_get(str(img_path))
+                use_cache = False
+                
                 if cache_result is not None:
+                    cached_desc, _ = cache_result
+                    # Check if cached result is a fallback result
+                    is_fallback_result = "Fallback Mode" in cached_desc
+                    # Check if model is currently in fallback mode
+                    model_in_fallback = getattr(self.model, '_using_fallback', False)
+                    
+                    if is_fallback_result and not model_in_fallback:
+                        logger.info(f"Ignoring cached fallback result for {img_path} as model is healthy")
+                        use_cache = False
+                    else:
+                        use_cache = True
+
+                if use_cache:
                     logger.info(f"Using cached analysis for {img_path}")
                     description, clean_caption = cache_result
                 else: 
-                    # Image not in cache, so analyze it
+                    # Image not in cache or cache invalid, so analyze it
                     self.status_label.config(text=f"Analyzing image with {self.model_name} model...")
                     self.root.update()  # Refresh UI to show status
                     
@@ -1991,6 +2046,9 @@ class ReviewGUI:
             if not description.startswith("Error:"):
                  self.status_label.config(text=f"Displaying image {self.current + 1} of {len(self.items)}")
 
+            # Apply visual feedback for pending actions
+            self._apply_pending_visuals(str(img_path))
+
             # Auto-generate prompts if enabled and prompts are visible
             self._auto_generate_prompts_if_enabled(description)
 
@@ -2007,32 +2065,57 @@ class ReviewGUI:
             self.caption_text.config(state=tk.DISABLED)
             # raise # Re-raise if it's a critical error that should stop the app or be handled higher up
 
+    def _preload_worker_loop(self):
+        """Background worker to process preload requests sequentially"""
+        while True:
+            try:
+                # Get next image index to preload
+                idx = self.preload_queue.get()
+                
+                if idx is None: # Sentinel to stop
+                    break
+                    
+                if idx >= len(self.items):
+                    self.preload_queue.task_done()
+                    continue
+                    
+                try:
+                    _, _, img_path = self.items[idx]
+                    path_str = str(img_path)
+                    
+                    # Skip if already cached
+                    if not self._cache_contains(path_str):
+                        logger.info(f"Preloading analysis for {img_path}")
+                        # This blocks, but it's in a background thread
+                        description, clean_caption = self.model.analyze_image(path_str)
+                        
+                        # Only cache if it's NOT a fallback result (unless we want to cache fallbacks?)
+                        # Better to not cache fallbacks during preload, so user gets a fresh try when viewing
+                        if "Fallback Mode" not in description:
+                            self._cache_set(path_str, (description, clean_caption))
+                        else:
+                            logger.warning(f"Preload generated fallback result for {img_path}, skipping cache.")
+                except Exception as e:
+                    logger.error(f"Error preloading image {idx}: {str(e)}")
+                finally:
+                    self.preload_queue.task_done()
+                    
+            except Exception as e:
+                logger.error(f"Error in preload worker: {e}")
+
     def _preload_next_images(self):
-        """Preload the next few images for faster navigation"""
+        """Queue the next few images for preloading"""
         # Get next 3 images to preload
         preload_count = 3
-        next_indices = [
-            (self.current + i) % len(self.items) 
-            for i in range(1, preload_count + 1) 
-            if self.current + i < len(self.items)
-        ]
         
-        def preload_worker(idx):
-            try:
-                _, _, img_path = self.items[idx]
-                if not self._cache_contains(str(img_path)):
-                    logger.info(f"Preloading analysis for {img_path}")
-                    description, clean_caption = self.model.analyze_image(str(img_path))
-                    self._cache_set(str(img_path), (description, clean_caption))
-            except Exception as e:
-                logger.error(f"Error preloading image {idx}: {str(e)}")
+        # Clear existing queue if possible? No, queue.Queue doesn't support clearing easily.
+        # But we can just add new ones. The worker will skip cached ones.
         
-        # Start preloading threads (not daemon for better cleanup)
-        threads = []
-        for idx in next_indices:
-            thread = threading.Thread(target=preload_worker, args=(idx,))
-            thread.start()
-            threads.append(thread)
+        for i in range(1, preload_count + 1):
+            idx = (self.current + i) % len(self.items)
+            if self.current + i < len(self.items):
+                # Avoid adding duplicates if possible, but queue handles it fine
+                self.preload_queue.put(idx)
 
     def move_item(self, dest_dir: Path):
         """Move current item to destination directory with error handling"""
@@ -2081,23 +2164,173 @@ class ReviewGUI:
             self.status_label.config(text=f"Error {action.lower()} image: {str(e)}")
             raise
 
-    def approve(self):
-        """Approve current item with error handling"""
+    def _apply_pending_visuals(self, img_path_str):
+        """Apply visual indicators for pending actions"""
         try:
-            logger.info(f"Approving item {self.current + 1}/{len(self.items)}")
-            self.move_item(self.approved_dir)
+            status = self.pending_actions.get(img_path_str)
+            style = ttk.Style()
+            
+            if status == 'approved':
+                self.img_label.config(background=DARK_APPROVE_BTN if self.theme_manager.theme == "dark" else LIGHT_APPROVE_BTN)
+                self.status_label.config(text=f"Marked for Approval (Pending Commit)")
+            elif status == 'rejected':
+                self.img_label.config(background=DARK_REJECT_BTN if self.theme_manager.theme == "dark" else LIGHT_REJECT_BTN)
+                self.status_label.config(text=f"Marked for Rejection (Pending Commit)")
+            else:
+                self.img_label.config(background=self.theme_manager.root.cget('bg'))
+                
+            # Update button states based on pending actions
+            has_pending = len(self.pending_actions) > 0
+            if hasattr(self, 'commit_btn'):
+                self.commit_btn.config(state=tk.NORMAL if has_pending else tk.DISABLED)
+                self.commit_btn.config(text=f"💾 Commit ({len(self.pending_actions)})")
+                
+            if hasattr(self, 'undo_btn'):
+                self.undo_btn.config(state=tk.NORMAL if self.action_history else tk.DISABLED)
+                
         except Exception as e:
-            logger.error(f"Error approving item: {str(e)}")
-            messagebox.showerror("Error", f"Failed to approve item: {str(e)}")
+            logger.error(f"Error applying pending visuals: {e}")
+
+    def approve(self):
+        """Mark current item for approval"""
+        if not self.items:
+            return
+            
+        try:
+            _, _, img_path = self.items[self.current]
+            img_path_str = str(img_path)
+            
+            # Store action
+            self.pending_actions[img_path_str] = 'approved'
+            self.action_history.append((img_path_str, 'approved'))
+            
+            logger.info(f"Marked item {self.current + 1} for approval")
+            self._next_image()
+            
+        except Exception as e:
+            logger.error(f"Error marking item for approval: {str(e)}")
+            messagebox.showerror("Error", f"Failed to mark item: {str(e)}")
         
     def reject(self):
-        """Reject current item with error handling"""
+        """Mark current item for rejection"""
+        if not self.items:
+            return
+            
         try:
-            logger.info(f"Rejecting item {self.current + 1}/{len(self.items)}")
-            self.move_item(self.rejected_dir)
+            _, _, img_path = self.items[self.current]
+            img_path_str = str(img_path)
+            
+            # Store action
+            self.pending_actions[img_path_str] = 'rejected'
+            self.action_history.append((img_path_str, 'rejected'))
+            
+            logger.info(f"Marked item {self.current + 1} for rejection")
+            self._next_image()
+            
         except Exception as e:
-            logger.error(f"Error rejecting item: {str(e)}")
-            messagebox.showerror("Error", f"Failed to reject item: {str(e)}")
+            logger.error(f"Error marking item for rejection: {str(e)}")
+            messagebox.showerror("Error", f"Failed to mark item: {str(e)}")
+
+    def undo_last_action(self):
+        """Undo the last pending action"""
+        if not self.action_history:
+            return
+            
+        try:
+            img_path_str, action = self.action_history.pop()
+            if img_path_str in self.pending_actions:
+                del self.pending_actions[img_path_str]
+                
+            # Find index of this image to navigate back to it
+            target_idx = -1
+            for i, (_, _, path) in enumerate(self.items):
+                if str(path) == img_path_str:
+                    target_idx = i
+                    break
+            
+            if target_idx != -1:
+                self.current = target_idx
+                self.show_current()
+                self.status_label.config(text=f"Undid last action ({action})")
+            else:
+                # If image not found (shouldn't happen in this flow), just refresh current
+                self.show_current()
+                
+        except Exception as e:
+            logger.error(f"Error undoing action: {e}")
+
+    def commit_actions(self):
+        """Commit all pending actions"""
+        if not self.pending_actions:
+            return
+            
+        try:
+            count = len(self.pending_actions)
+            if not messagebox.askyesno("Commit Actions", f"Process {count} pending actions?"):
+                return
+                
+            self.status_label.config(text=f"Committing {count} actions...")
+            
+            # Process actions
+            # We need to process in reverse order of indices to avoid shifting issues if we were popping by index
+            # But here we are moving files, so we should iterate carefully.
+            # Better strategy: Identify all items to move first, then move them.
+            
+            items_to_remove = []
+            
+            for i, (base_name, json_path, img_path) in enumerate(self.items):
+                path_str = str(img_path)
+                if path_str in self.pending_actions:
+                    action = self.pending_actions[path_str]
+                    dest_dir = self.approved_dir if action == 'approved' else self.rejected_dir
+                    
+                    try:
+                        # Move files
+                        new_img_path = dest_dir / img_path.name
+                        txt_path = img_path.with_suffix('.txt')
+                        new_txt_path = dest_dir / txt_path.name
+                        
+                        shutil.move(str(img_path), str(new_img_path))
+                        if txt_path.exists():
+                            shutil.move(str(txt_path), str(new_txt_path))
+                        
+                        # Update JSON
+                        if json_path.exists():
+                            data = json.loads(json_path.read_text(encoding='utf-8'))
+                            data['review_status'] = action
+                            data['timestamp'] = datetime.now().isoformat()
+                            
+                            new_json_path = dest_dir / f"{base_name}_reviewed.json"
+                            self._atomic_write_text(new_json_path, json.dumps(data, indent=2))
+                            json_path.unlink()
+                            
+                        items_to_remove.append(i)
+                        
+                    except Exception as move_error:
+                        logger.error(f"Error moving {img_path}: {move_error}")
+            
+            # Remove processed items from list (in reverse order to maintain indices)
+            for i in sorted(items_to_remove, reverse=True):
+                self.items.pop(i)
+                
+            # Clear state
+            self.pending_actions.clear()
+            self.action_history.clear()
+            
+            # Refresh view
+            if self.items:
+                if self.current >= len(self.items):
+                    self.current = len(self.items) - 1
+                self.show_current()
+                self.status_label.config(text=f"Successfully processed {count} images")
+            else:
+                self.status_label.config(text="All images processed")
+                messagebox.showinfo("Complete", "All images have been processed.")
+                # Optional: self.root.quit()
+                
+        except Exception as e:
+            logger.error(f"Error committing actions: {e}")
+            messagebox.showerror("Error", f"Failed to commit actions: {e}")
 
     def _save_caption_edits(self):
         """Save edited captions to both JSON and TXT files"""

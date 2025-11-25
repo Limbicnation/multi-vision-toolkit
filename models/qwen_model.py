@@ -393,6 +393,9 @@ class QwenCaptioner(BaseVisionModel):
         if getattr(self, '_using_fallback', False) or not all([self.model, self.processor, _QWEN_CLASS_AVAILABLE]):
             logger.warning("QwenCaptioner using fallback CLIP model for image analysis (Qwen components not fully available or in fallback mode).")
             logger.warning(f"Reason: _using_fallback={getattr(self, '_using_fallback', False)}, model={self.model is not None}, processor={self.processor is not None}, class_available={_QWEN_CLASS_AVAILABLE}")
+            # Log the fallback reason stored during setup if available
+            if hasattr(self, '_fallback_reason'):
+                logger.warning(f"Original fallback reason: {self._fallback_reason}")
             return self._analyze_with_clip(pil_image, quality)
 
         # Determine instruction/prompt to use
@@ -458,6 +461,8 @@ class QwenCaptioner(BaseVisionModel):
 
         except Exception as e:
             logger.error(f"Error generating caption with QwenCaptioner: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return self._analyze_with_clip(pil_image, quality)
 
     @classmethod
@@ -493,6 +498,7 @@ class QwenCaptioner(BaseVisionModel):
             logger.error(error_msg)
 
     def _load_clip_as_fallback(self, reason: str) -> None:
+        self._fallback_reason = reason # Store reason for debugging
         logger.warning(f"Attempting to load CLIP model as a fallback due to: {reason}")
         try:
             global CLIPModel, CLIPProcessor
