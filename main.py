@@ -33,10 +33,16 @@ def validate_environment():
     logger = logging.getLogger(__name__)
     
     # Disable flash attention globally to prevent conflicts
-    import os
-    os.environ["DISABLE_FLASH_ATTENTION"] = "1"
-    os.environ["FLASH_ATTENTION_SKIP_CUDA_CHECK"] = "1"
-    os.environ["USE_FLASH_ATTENTION"] = "0"
+    # Disable flash attention globally to prevent conflicts
+    flash_attn_env_vars = {
+        "DISABLE_FLASH_ATTENTION": "1",
+        "FLASH_ATTENTION_SKIP_CUDA_CHECK": "1",
+        "USE_FLASH_ATTENTION": "0",
+        "FLASH_ATTN_DISABLE": "1",
+        "ATTN_BACKEND": "eager",
+    }
+    for var, val in flash_attn_env_vars.items():
+        os.environ[var] = val
     
     # Check torch version
     try:
@@ -74,7 +80,10 @@ def validate_environment():
     try:
         import importlib.util
         if importlib.util.find_spec("flash_attn"):
-            logger.warning("Flash attention detected - disabled globally to prevent symbol conflicts")
+            logger.warning(
+                "Flash attention installed but disabled. "
+                "If issues persist: pip uninstall flash-attn"
+            )
         else:
             logger.info("Flash attention not installed - this is fine, using eager attention")
     except Exception as e:
@@ -461,7 +470,7 @@ class ModelManager:
         self.check_model_cache()
 
     def unload_model(self, model_name: str = None) -> None:
-        """Unload a specific model or current model to free memory"""
+        """Unload model with proper CUDA cleanup order"""
         import gc
         
         if model_name is None:
@@ -469,38 +478,44 @@ class ModelManager:
             
         if model_name and model_name in self.models:
             logger.info(f"Unloading model: {model_name}")
-            
-            # Get the model object
             model = self.models[model_name]
             
-            # Clean up model attributes
+            # Step 1: Move to CPU first
             if hasattr(model, 'model') and model.model is not None:
-                if hasattr(model.model, 'cpu'):
-                    model.model.cpu()
-                del model.model
-                model.model = None
-                
-            if hasattr(model, 'processor') and model.processor is not None:
-                del model.processor
-                model.processor = None
-                
-            if hasattr(model, 'tokenizer') and model.tokenizer is not None:
-                del model.tokenizer
-                model.tokenizer = None
+                try:
+                    model.model.to('cpu')
+                except Exception as e:
+                    logger.warning(f"Could not move model to CPU: {e}")
             
-            # Remove from cache
+            # Step 2: Delete references
+            for attr in ['model', 'processor', 'tokenizer', 'vision_model']:
+                if hasattr(model, attr):
+                    try:
+                        delattr(model, attr)
+                    except Exception:
+                        pass
+            
+            # Step 3: Remove from cache
             del self.models[model_name]
-            
-            # Clear current model if it was the one unloaded
             if model_name == self._current_model_name:
                 self._current_model = None
                 self._current_model_name = None
             
-            # Force garbage collection and clear CUDA cache
-            gc.collect()
+            # Step 4: CUDA cleanup (proper order)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize()
+            
+            # Step 5: Python GC
+            gc.collect()
+            
+            # Step 6: Second CUDA pass after GC
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+                # Log memory state
+                allocated = torch.cuda.memory_allocated() / 1e9
+                logger.info(f"After unload - Allocated: {allocated:.2f}GB")
                 
             logger.info(f"Successfully unloaded model: {model_name}")
 
@@ -825,9 +840,11 @@ class ReviewGUI:
                 self.model = self.model_manager.get_model(self.model_name)
             except Exception as final_fallback_e:
                 logger.critical(f"All models failed to load: {final_fallback_e}")
+                # We can't use self.root here as it might not be initialized yet
+                # messagebox.showerror will create a temporary root if needed
                 messagebox.showerror("Critical Error", "All available models failed to load. The application cannot continue.")
-                self.root.quit() # Exit if no model can be loaded
-                return # Stop further initialization
+                import sys
+                sys.exit(1) # Exit if no model can be loaded
 
         self.dataset_prep = DatasetPreparator()
         
@@ -853,14 +870,13 @@ class ReviewGUI:
         
         # Thread safety for items list
         self.items_lock = threading.Lock()
+        # Thread safety for model access
+        self.model_lock = threading.RLock()
         
         # Preloading worker
         self.preload_queue = queue.LifoQueue() # Use LIFO to prioritize most recent requests
         self.preload_thread = threading.Thread(target=self._preload_worker_loop, daemon=True)
         self.preload_thread.start()
-        
-        # UI Style
-        self.style = ttk.Style()
         
         # Pending actions state
         self.pending_actions = {} # Map of img_path_str -> action ('approved'/'rejected')
@@ -872,6 +888,9 @@ class ReviewGUI:
             self.root = TkinterDnD.Tk()
         else:
             self.root = tk.Tk()
+            
+        # UI Style (Must be initialized AFTER root window)
+        self.style = ttk.Style()
             
         self.root.title("Multi-Vision Toolkit")
         self.root.geometry("1280x800")
@@ -1563,12 +1582,26 @@ class ReviewGUI:
             new_model = self.model_var.get()
             if new_model != self.model_name:
                 logger.info(f"Switching model from {self.model_name} to {new_model}")
-                self.status_label.config(text=f"Switching to {new_model} model...")
-                self.model_label.config(text=f"{new_model} (loading...)")
-                self.root.update()  # Refresh UI to show status
                 
-                # Disable controls during model switching
-                self._set_controls_state(tk.DISABLED)
+                # Add thread safety for model switching
+                with self.model_lock:
+                    # Clear pending preload tasks
+                    while not self.preload_queue.empty():
+                        try:
+                            self.preload_queue.get_nowait()
+                            self.preload_queue.task_done()
+                        except queue.Empty:
+                            break
+
+                    # Clear cache when switching models
+                    self._cache_clear()
+
+                    self.status_label.config(text=f"Switching to {new_model} model...")
+                    self.model_label.config(text=f"{new_model} (loading...)")
+                    self.root.update()  # Refresh UI to show status
+                    
+                    # Disable controls during model switching
+                    self._set_controls_state(tk.DISABLED)
                 
                 try:
                     # Create loading indicator in a separate window
@@ -1929,7 +1962,7 @@ class ReviewGUI:
             return
         
         # Clean up previous image resources
-        self._cleanup_image_resources()
+        # self._cleanup_image_resources() # Removed to prevent premature GC causing pyimage errors
             
         try:
             self.status_label.config(text="Loading image...")
@@ -1950,21 +1983,20 @@ class ReviewGUI:
                 use_cache = False
                 
                 if cache_result is not None:
-                    cached_desc, _ = cache_result
-                    # Check if cached result is a fallback result
-                    is_fallback_result = "Fallback Mode" in cached_desc
-                    # Check if model is currently in fallback mode
+                    (cached_desc, cached_caption), was_fallback = cache_result
                     model_in_fallback = getattr(self.model, '_using_fallback', False)
                     
-                    if is_fallback_result and not model_in_fallback:
-                        logger.info(f"Ignoring cached fallback result for {img_path} as model is healthy")
+                    # Don't use cached fallback if model is now healthy
+                    if was_fallback and not model_in_fallback:
+                        logger.info(f"Ignoring cached fallback for {img_path}")
                         use_cache = False
                     else:
+                        description, clean_caption = cached_desc, cached_caption
                         use_cache = True
 
                 if use_cache:
                     logger.info(f"Using cached analysis for {img_path}")
-                    description, clean_caption = cache_result
+                    (description, clean_caption), _ = cache_result
                 else: 
                     # Image not in cache or cache invalid, so analyze it
                     self.status_label.config(text=f"Analyzing image with {self.model_name} model...")
@@ -2033,10 +2065,25 @@ class ReviewGUI:
                 new_height = max(1, new_height)
                 img = img.resize((new_width, new_height), Image.LANCZOS)
             
-            photo = ImageTk.PhotoImage(img)
+            # Store reference to old photo to prevent premature GC
+            old_photo = getattr(self.img_label, 'image', None)
             
-            self.img_label.configure(image=photo)
-            self.img_label.image = photo
+            new_photo = ImageTk.PhotoImage(img, master=self.img_label)
+
+            # Store strong reference IMMEDIATELY after creation (BEFORE configure)
+            # This prevents GC from collecting the PhotoImage during configure()
+            self.img_label.image = new_photo
+            
+            try:
+                self.img_label.configure(image=new_photo)
+            except tk.TclError as tcl_e:
+                # If "pyimageX doesn't exist" occurs, it might be due to a master mismatch or race condition
+                logger.warning(f"TclError setting image: {tcl_e}. Retrying...")
+                self.img_label.configure(image='') # Clear first
+                self.img_label.configure(image=new_photo)
+            
+            # Now safe to release old reference
+            old_photo = None
             
             self.img_label.place(relx=0.5, rely=0.5, anchor='center')
             
@@ -2071,7 +2118,13 @@ class ReviewGUI:
             logger.error(f"Critical error in show_current for {self.items[self.current][2].name if self.items else 'N/A'}: {str(e)}")
             self.status_label.config(text=f"Error displaying image: {str(e)}")
             # Optionally, clear display or show a generic error image
-            self.img_label.config(image="")
+            # Optionally, clear display or show a generic error image
+            try:
+                self.img_label.configure(image='')
+                self.img_label.image = None
+            except tk.TclError:
+                pass # Image reference already invalid
+                
             self.caption_text.config(state=tk.NORMAL)
             self.caption_text.delete(1.0, tk.END)
             self.caption_text.insert(tk.END, f"Failed to display image or analysis: {str(e)}")
@@ -2099,12 +2152,20 @@ class ReviewGUI:
                     
                     # Skip if already cached
                     if not self._cache_contains(path_str):
-                        logger.info(f"Preloading analysis for {img_path}")
-                        # This blocks, but it's in a background thread
-                        description, clean_caption = self.model.analyze_image(path_str)
+                        # Acquire model lock for thread-safe analysis
+                        with self.model_lock:
+                            # Double-check cache after acquiring lock
+                            if self._cache_contains(path_str):
+                                continue
+
+                            if self.model is None:
+                                logger.warning("Model unavailable during preload")
+                                continue
+
+                            logger.info(f"Preloading analysis for {img_path}")
+                            description, clean_caption = self.model.analyze_image(path_str)
                         
-                        # Only cache if it's NOT a fallback result (unless we want to cache fallbacks?)
-                        # Better to not cache fallbacks during preload, so user gets a fresh try when viewing
+                        # Cache result outside lock (if not fallback)
                         if "Fallback Mode" not in description:
                             self._cache_set(path_str, (description, clean_caption))
                         else:
@@ -2273,7 +2334,7 @@ class ReviewGUI:
             if target_idx != -1:
                 self.current = target_idx
                 self.show_current()
-                self.status_label.config(text=f"Undid last action ({action})")
+                self.status_label.config(text=f"Undid last action ({new_action})")
             else:
                 # If image not found (shouldn't happen in this flow), just refresh current
                 self.show_current()
@@ -2715,7 +2776,7 @@ class ReviewGUI:
                     for item_idx, (base_name, json_path, img_path) in enumerate(current_batch_items):
                         cache_result = self._cache_get(str(img_path))
                         if cache_result is not None:
-                            description, clean_caption = cache_result
+                            (description, clean_caption), _ = cache_result
                             # Save already cached results
                             data = {"results": {"caption": description}}
                             self._atomic_write_text(json_path, json.dumps(data, indent=2))
@@ -2930,13 +2991,21 @@ class ReviewGUI:
         except Exception as e:
             logger.error(f"Error creating batch summary report: {e}")
 
-    def _cache_get(self, key: str) -> Optional[Tuple[str, str]]:
-        """Thread-safe cache get operation"""
+    def _cache_get(self, key: str) -> Optional[Tuple[Tuple[str, str], bool]]:
+        """Thread-safe cache get returning (value, is_fallback)"""
         with self.cache_lock:
-            return self.image_cache.get(key)
+            result = self.image_cache.get(key)
+            if result is None:
+                return None
+            # Handle legacy entries without fallback flag
+            if isinstance(result, tuple) and len(result) == 2:
+                if isinstance(result[0], tuple):
+                    return result  # New format
+                return (result, False)  # Legacy format
+            return None
     
-    def _cache_set(self, key: str, value: Tuple[str, str]) -> None:
-        """Thread-safe cache set operation with size limits"""
+    def _cache_set(self, key: str, value: Tuple[str, str], is_fallback: bool = False) -> None:
+        """Thread-safe cache set with fallback tracking"""
         with self.cache_lock:
             # Remove oldest entries if cache is full
             if len(self.image_cache) >= self.max_cache_size:
@@ -2946,7 +3015,8 @@ class ReviewGUI:
                     self.image_cache.pop(old_key, None)
                 logger.info(f"Cache cleanup: removed {len(keys_to_remove)} entries")
             
-            self.image_cache[key] = value
+            # Store value with fallback flag: ((desc, caption), is_fallback)
+            self.image_cache[key] = (value, is_fallback)
     
     def _cache_clear(self) -> None:
         """Thread-safe cache clear operation"""
@@ -2957,6 +3027,110 @@ class ReviewGUI:
         """Thread-safe cache membership test"""
         with self.cache_lock:
             return key in self.image_cache
+    
+    def toggle_theme(self):
+        """Toggle between light and dark themes"""
+        try:
+            current_theme = self.style.theme_use()
+            # If current theme is not standard, we assume it's one of ours or system default
+            # Simple toggle logic: if background is dark -> switch to light, else dark
+            
+            bg_color = self.root.cget('bg')
+            is_dark = False
+            
+            # Check if current background is dark (simple heuristic)
+            if bg_color.startswith('#'):
+                # Parse hex
+                r = int(bg_color[1:3], 16)
+                g = int(bg_color[3:5], 16)
+                b = int(bg_color[5:7], 16)
+                if (r + g + b) / 3 < 128:
+                    is_dark = True
+            elif bg_color in ['black', 'gray10', 'gray20', 'gray30']:
+                is_dark = True
+                
+            new_theme = "light" if is_dark else "dark"
+            self.apply_theme(new_theme)
+            
+        except Exception as e:
+            logger.error(f"Error toggling theme: {e}")
+            
+    def apply_theme(self, theme_name: str):
+        """Apply the specified theme"""
+        try:
+            if theme_name == "dark":
+                # Dark theme colors
+                bg_color = "#2d2d2d"
+                fg_color = "#ffffff"
+                entry_bg = "#3d3d3d"
+                entry_fg = "#ffffff"
+                select_bg = "#4a4a4a"
+                
+                self.style.theme_use('clam') # Use clam as base for better customization
+                
+                self.style.configure(".", background=bg_color, foreground=fg_color, fieldbackground=entry_bg)
+                self.style.configure("TLabel", background=bg_color, foreground=fg_color)
+                self.style.configure("TButton", background=select_bg, foreground=fg_color)
+                self.style.configure("TEntry", fieldbackground=entry_bg, foreground=entry_fg)
+                self.style.configure("TFrame", background=bg_color)
+                self.style.configure("TLabelframe", background=bg_color, foreground=fg_color)
+                self.style.configure("TLabelframe.Label", background=bg_color, foreground=fg_color)
+                
+                # Configure root and standard widgets
+                self.root.configure(bg=bg_color)
+                self.root.option_add("*Background", bg_color)
+                self.root.option_add("*Foreground", fg_color)
+                self.root.option_add("*Entry.Background", entry_bg)
+                self.root.option_add("*Entry.Foreground", entry_fg)
+                self.root.option_add("*Text.Background", entry_bg)
+                self.root.option_add("*Text.Foreground", entry_fg)
+                self.root.option_add("*Listbox.Background", entry_bg)
+                self.root.option_add("*Listbox.Foreground", entry_fg)
+                
+                # Update specific widgets if they exist
+                if hasattr(self, 'caption_text'):
+                    self.caption_text.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+                if hasattr(self, 'img_label'):
+                    self.img_label.configure(bg=bg_color)
+                if hasattr(self, 'status_label'):
+                    self.status_label.configure(bg=bg_color, fg=fg_color)
+                    
+            else:
+                # Light theme (default)
+                bg_color = "#f0f0f0"
+                fg_color = "#000000"
+                entry_bg = "#ffffff"
+                entry_fg = "#000000"
+                
+                self.style.theme_use('clam')
+                
+                self.style.configure(".", background=bg_color, foreground=fg_color, fieldbackground=entry_bg)
+                self.style.configure("TLabel", background=bg_color, foreground=fg_color)
+                self.style.configure("TButton", background="#e1e1e1", foreground=fg_color)
+                self.style.configure("TEntry", fieldbackground=entry_bg, foreground=entry_fg)
+                self.style.configure("TFrame", background=bg_color)
+                
+                # Configure root
+                self.root.configure(bg=bg_color)
+                self.root.option_add("*Background", bg_color)
+                self.root.option_add("*Foreground", fg_color)
+                self.root.option_add("*Entry.Background", entry_bg)
+                self.root.option_add("*Entry.Foreground", entry_fg)
+                self.root.option_add("*Text.Background", entry_bg)
+                self.root.option_add("*Text.Foreground", entry_fg)
+                
+                # Update specific widgets
+                if hasattr(self, 'caption_text'):
+                    self.caption_text.configure(bg=entry_bg, fg=entry_fg, insertbackground=fg_color)
+                if hasattr(self, 'img_label'):
+                    self.img_label.configure(bg=bg_color)
+                if hasattr(self, 'status_label'):
+                    self.status_label.configure(bg=bg_color, fg=fg_color)
+                    
+            logger.info(f"Applied theme: {theme_name}")
+            
+        except Exception as e:
+            logger.error(f"Error applying theme {theme_name}: {e}")
     
     def _cache_items(self) -> List[Tuple[str, Tuple[str, str]]]:
         """Thread-safe cache items iteration"""
@@ -3005,12 +3179,14 @@ class ReviewGUI:
             raise e
     
     def _cleanup_image_resources(self) -> None:
-        """Clean up PIL image resources"""
+        """Clean up PIL image resources safely - ONLY call during shutdown"""
         try:
-            # Clear any existing image reference
-            if hasattr(self, 'img_label') and hasattr(self.img_label, 'image'):
+            if hasattr(self, 'img_label'):
+                try:
+                    self.img_label.configure(image='')
+                except tk.TclError:
+                    pass  # Widget may already be destroyed
                 self.img_label.image = None
-                self.img_label.configure(image='')
         except Exception as e:
             logger.warning(f"Error cleaning up image resources: {e}")
     

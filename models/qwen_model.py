@@ -439,7 +439,7 @@ class QwenCaptioner(BaseVisionModel):
             
             # Use memory-efficient inference with mixed precision
             with torch.inference_mode():
-                with torch.cuda.amp.autocast(dtype=torch.float16):
+                with torch.amp.autocast('cuda', dtype=torch.float16):
                     generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
@@ -823,7 +823,7 @@ class QwenCaptioner(BaseVisionModel):
             
             # Use memory-efficient inference with mixed precision
             with torch.inference_mode():
-                with torch.cuda.amp.autocast(dtype=torch.float16):
+                with torch.amp.autocast('cuda', dtype=torch.float16):
                     generated_ids = self.model.generate(**inputs, **generation_params)
             
             generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
