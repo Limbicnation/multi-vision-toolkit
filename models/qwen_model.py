@@ -7,6 +7,7 @@ logger = logging.getLogger(__name__) # Define logger early
 import os
 from typing import Tuple, Optional, Dict, List, Any
 import importlib
+import traceback
 
 # Set PyTorch memory allocation config to avoid fragmentation
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -461,7 +462,6 @@ class QwenCaptioner(BaseVisionModel):
 
         except Exception as e:
             logger.error(f"Error generating caption with QwenCaptioner: {str(e)}")
-            import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return self._analyze_with_clip(pil_image, quality)
 

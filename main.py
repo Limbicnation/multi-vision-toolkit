@@ -851,14 +851,21 @@ class ReviewGUI:
         self.cache_lock = threading.RLock()  # Reentrant lock for nested calls
         self.max_cache_size = 100  # Limit cache to prevent memory exhaustion
         
+        # Thread safety for items list
+        self.items_lock = threading.Lock()
+        
         # Preloading worker
-        self.preload_queue = queue.Queue()
+        self.preload_queue = queue.LifoQueue() # Use LIFO to prioritize most recent requests
         self.preload_thread = threading.Thread(target=self._preload_worker_loop, daemon=True)
         self.preload_thread.start()
         
+        # UI Style
+        self.style = ttk.Style()
+        
         # Pending actions state
-        self.pending_actions = {}  # Map: img_path -> 'approved' | 'rejected'
-        self.action_history = []   # Stack of (img_path, action) for Undo
+        self.pending_actions = {} # Map of img_path_str -> action ('approved'/'rejected')
+        self.action_history = [] # Stack of (img_path_str, old_action, new_action) tuples for undo
+        self.item_path_to_idx = {} # Map of img_path_str -> index in self.items for O(1) lookup
         
         # Initialize TK with drag and drop support if available
         if HAS_DND:
@@ -1829,7 +1836,6 @@ class ReviewGUI:
 
     def load_items(self):
         """Load image items with error handling"""
-        self.items = []
         try:
             self.status_label.config(text="Loading images...")
             
@@ -1838,19 +1844,26 @@ class ReviewGUI:
                 self.status_label.config(text=f"Review directory not found: {self.review_dir}")
                 return
                 
-            for f in self.review_dir.iterdir():
-                if self.dataset_prep.is_supported_image(f):
-                    img_path = f
-                    base_name = f.stem
-                    json_path = f.parent / f"{base_name}_for_review.json"
-                    
-                    if not json_path.exists():
-                        self._atomic_write_text(
-                            json_path,
-                            json.dumps({"results": {"caption": ""}}, indent=2)
-                        )
-                    
-                    self.items.append((base_name, json_path, img_path))
+            with self.items_lock:
+                self.items = []
+                self.item_path_to_idx = {}
+                
+                for f in self.review_dir.iterdir():
+                    if self.dataset_prep.is_supported_image(f):
+                        img_path = f
+                        base_name = f.stem
+                        json_path = f.parent / f"{base_name}_for_review.json"
+                        
+                        if not json_path.exists():
+                            self._atomic_write_text(
+                                json_path,
+                                json.dumps({"results": {"caption": ""}}, indent=2)
+                            )
+                        
+                        self.items.append((base_name, json_path, img_path))
+                
+                # Populate index map
+                self.item_path_to_idx = {str(path): i for i, (_, _, path) in enumerate(self.items)}
             
             self.current = 0
             self.progress_label.config(text=f"0/{len(self.items)}")
@@ -2075,12 +2088,13 @@ class ReviewGUI:
                 if idx is None: # Sentinel to stop
                     break
                     
-                if idx >= len(self.items):
-                    self.preload_queue.task_done()
-                    continue
-                    
                 try:
-                    _, _, img_path = self.items[idx]
+                    with self.items_lock:
+                        if idx >= len(self.items):
+                            self.preload_queue.task_done()
+                            continue
+                        _, _, img_path = self.items[idx]
+                    
                     path_str = str(img_path)
                     
                     # Skip if already cached
@@ -2168,7 +2182,8 @@ class ReviewGUI:
         """Apply visual indicators for pending actions"""
         try:
             status = self.pending_actions.get(img_path_str)
-            style = ttk.Style()
+            # Use pre-initialized style
+            style = self.style
             
             if status == 'approved':
                 self.img_label.config(background=DARK_APPROVE_BTN if self.theme_manager.theme == "dark" else LIGHT_APPROVE_BTN)
@@ -2201,8 +2216,9 @@ class ReviewGUI:
             img_path_str = str(img_path)
             
             # Store action
+            old_action = self.pending_actions.get(img_path_str)
             self.pending_actions[img_path_str] = 'approved'
-            self.action_history.append((img_path_str, 'approved'))
+            self.action_history.append((img_path_str, old_action, 'approved'))
             
             logger.info(f"Marked item {self.current + 1} for approval")
             self._next_image()
@@ -2221,8 +2237,9 @@ class ReviewGUI:
             img_path_str = str(img_path)
             
             # Store action
+            old_action = self.pending_actions.get(img_path_str)
             self.pending_actions[img_path_str] = 'rejected'
-            self.action_history.append((img_path_str, 'rejected'))
+            self.action_history.append((img_path_str, old_action, 'rejected'))
             
             logger.info(f"Marked item {self.current + 1} for rejection")
             self._next_image()
@@ -2237,16 +2254,21 @@ class ReviewGUI:
             return
             
         try:
-            img_path_str, action = self.action_history.pop()
-            if img_path_str in self.pending_actions:
-                del self.pending_actions[img_path_str]
+            img_path_str, old_action, new_action = self.action_history.pop()
+            
+            # Only perform undo if the current state matches the action being undone
+            if self.pending_actions.get(img_path_str) == new_action:
+                if old_action is None:
+                    # If there was no previous action, remove it
+                    if img_path_str in self.pending_actions:
+                        del self.pending_actions[img_path_str]
+                else:
+                    # Restore previous action
+                    self.pending_actions[img_path_str] = old_action
                 
-            # Find index of this image to navigate back to it
-            target_idx = -1
-            for i, (_, _, path) in enumerate(self.items):
-                if str(path) == img_path_str:
-                    target_idx = i
-                    break
+            # Find index of this image to navigate back to it using O(1) lookup
+            with self.items_lock:
+                target_idx = self.item_path_to_idx.get(img_path_str, -1)
             
             if target_idx != -1:
                 self.current = target_idx
@@ -2277,56 +2299,67 @@ class ReviewGUI:
             # Better strategy: Identify all items to move first, then move them.
             
             items_to_remove = []
-            
-            for i, (base_name, json_path, img_path) in enumerate(self.items):
-                path_str = str(img_path)
-                if path_str in self.pending_actions:
-                    action = self.pending_actions[path_str]
-                    dest_dir = self.approved_dir if action == 'approved' else self.rejected_dir
-                    
-                    try:
-                        # Move files
-                        new_img_path = dest_dir / img_path.name
-                        txt_path = img_path.with_suffix('.txt')
-                        new_txt_path = dest_dir / txt_path.name
-                        
-                        shutil.move(str(img_path), str(new_img_path))
-                        if txt_path.exists():
-                            shutil.move(str(txt_path), str(new_txt_path))
-                        
-                        # Update JSON
-                        if json_path.exists():
-                            data = json.loads(json_path.read_text(encoding='utf-8'))
-                            data['review_status'] = action
-                            data['timestamp'] = datetime.now().isoformat()
-                            
-                            new_json_path = dest_dir / f"{base_name}_reviewed.json"
-                            self._atomic_write_text(new_json_path, json.dumps(data, indent=2))
-                            json_path.unlink()
-                            
-                        items_to_remove.append(i)
-                        
-                    except Exception as move_error:
-                        logger.error(f"Error moving {img_path}: {move_error}")
-            
-            # Remove processed items from list (in reverse order to maintain indices)
-            for i in sorted(items_to_remove, reverse=True):
-                self.items.pop(i)
+        
+            # Protect access to items list
+            with self.items_lock:
+                # Create a copy for iteration to avoid modification issues during iteration
+                # But we need indices, so we'll iterate carefully or use the copy to find items
+                # Since we are locking, we can iterate directly but we shouldn't modify while iterating
+                items_snapshot = list(enumerate(self.items))
                 
-            # Clear state
-            self.pending_actions.clear()
-            self.action_history.clear()
-            
-            # Refresh view
-            if self.items:
-                if self.current >= len(self.items):
-                    self.current = len(self.items) - 1
-                self.show_current()
-                self.status_label.config(text=f"Successfully processed {count} images")
-            else:
-                self.status_label.config(text="All images processed")
-                messagebox.showinfo("Complete", "All images have been processed.")
-                # Optional: self.root.quit()
+                for i, (base_name, json_path, img_path) in items_snapshot:
+                    path_str = str(img_path)
+                    if path_str in self.pending_actions:
+                        action = self.pending_actions[path_str]
+                        dest_dir = self.approved_dir if action == 'approved' else self.rejected_dir
+                        
+                        try:
+                            # Move files
+                            new_img_path = dest_dir / img_path.name
+                            txt_path = img_path.with_suffix('.txt')
+                            new_txt_path = dest_dir / txt_path.name
+                            
+                            shutil.move(str(img_path), str(new_img_path))
+                            if txt_path.exists():
+                                shutil.move(str(txt_path), str(new_txt_path))
+                            
+                            # Update JSON
+                            if json_path.exists():
+                                data = json.loads(json_path.read_text(encoding='utf-8'))
+                                data['review_status'] = action
+                                data['timestamp'] = datetime.now().isoformat()
+                                
+                                new_json_path = dest_dir / f"{base_name}_reviewed.json"
+                                self._atomic_write_text(new_json_path, json.dumps(data, indent=2))
+                                json_path.unlink()
+                                
+                            items_to_remove.append(i)
+                            
+                        except Exception as move_error:
+                            logger.error(f"Error moving {img_path}: {move_error}")
+                
+                # Remove processed items from list (in reverse order to maintain indices)
+                for i in sorted(items_to_remove, reverse=True):
+                    if i < len(self.items): # Safety check
+                        self.items.pop(i)
+                
+                # Rebuild index map
+                self.item_path_to_idx = {str(path): i for i, (_, _, path) in enumerate(self.items)}
+                    
+                # Clear state
+                self.pending_actions.clear()
+                self.action_history.clear()
+                
+                # Refresh view
+                if self.items:
+                    if self.current >= len(self.items):
+                        self.current = len(self.items) - 1
+                    self.show_current()
+                    self.status_label.config(text=f"Successfully processed {count} images")
+                else:
+                    self.status_label.config(text="All images processed")
+                    messagebox.showinfo("Complete", "All images have been processed.")
+                    # Optional: self.root.quit()
                 
         except Exception as e:
             logger.error(f"Error committing actions: {e}")
