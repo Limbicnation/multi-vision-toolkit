@@ -2,8 +2,7 @@
  A toolkit for local deployment of state-of-the-art vision models (Florence-2, Janus-Pro-1B, Qwen2.5-VL, and Qwen2.5-VL-7B-Captioner-Relaxed), providing advanced computer vision capabilities including object detection, image captioning, OCR, and visual analysis.
 
 <p align="center">
-  <img src="images/feature-image-light.png" width="48%" alt="Light Mode UI">
-  <img src="images/feature-image-dark.png" width="48%" alt="Dark Mode UI">
+  <img src="images/mvtk-feature-image.jpg" width="100%" alt="Multi-Vision Toolkit with Prompt Generation UI">
 </p>
 
 ## 🚀 Key Features
@@ -78,10 +77,10 @@ pip install flash-attn --no-build-isolation
 mkdir -p data/{review,approved,rejected}
 
 # Basic usage
-python main.py --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected
+python main.py --review_dir data/review --approved_dir data/approved --rejected_dir data/rejected --model qwen-captioner
 
 # Use specific model
-python main.py --review_dir data/review --model florence2  # or --model janus or --model qwen
+python main.py --review_dir data/review --model florence2  # or --model qwen-captioner
 
 # Add trigger word to captions
 python main.py --review_dir data/review --trigger_word "your_trigger"
@@ -214,7 +213,7 @@ This is due to a security measure in newer model loading functions that requires
 
 2. **Try a different model**: If updating isn't an option, try using a different model like the Qwen model:
    ```bash
-   python main.py --review_dir data/review --model qwen
+   python main.py --review_dir data/review --model qwen-captioner
    ```
 
 3. **Force use safetensors**: Models that use the safetensors format aren't affected by this vulnerability
